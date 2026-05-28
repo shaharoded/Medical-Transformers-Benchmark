@@ -137,7 +137,7 @@ class Strats(TimeSeriesModel):
         
 
     def forward(self, values, times, varis, obs_mask, demo,
-                labels=None, forecast_values=None, forecast_mask=None):
+                labels=None):
         bsz, max_obs = values.size()
         device = values.device
         if self.training:
@@ -169,9 +169,6 @@ class Strats(TimeSeriesModel):
             ts_emb = (contextual_emb*attention_weights).sum(dim=1)
         # concat demo and ts_emb
         ts_demo_emb = torch.cat((ts_emb, demo_emb), dim=-1)
-        # prediction/loss
-        if self.pretrain:
-            return self.forecast_final(ts_demo_emb, forecast_values, forecast_mask)
-        logits = self.binary_head(self.forecast_head(ts_demo_emb))[:,0] \
-                    if self.finetune else self.binary_head(ts_demo_emb)[:,0]
+        logits = self.binary_head(self.forecast_head(ts_demo_emb)) \
+                    if self.finetune else self.binary_head(ts_demo_emb)
         return self.binary_cls_final(logits, labels)

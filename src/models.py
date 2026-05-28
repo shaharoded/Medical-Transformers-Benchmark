@@ -40,17 +40,14 @@ class TimeSeriesModel(nn.Module):
             ts_demo_emb_size = args.hid_dim*args.M+args.hid_dim
         else:
             ts_demo_emb_size = args.hid_dim*2
-        self.pretrain = args.pretrain==1
         self.finetune = args.load_ckpt_path is not None
-        if self.pretrain:
+        if self.finetune:
             self.forecast_head = nn.Linear(ts_demo_emb_size, args.V)
-        elif self.finetune:
-            self.forecast_head = nn.Linear(ts_demo_emb_size, args.V)
-            self.binary_head = nn.Linear(args.V,1)
-            self.pos_class_weight = torch.tensor(args.pos_class_weight)
+            self.binary_head = nn.Linear(args.V,args.num_labels)
+            self.register_buffer('pos_class_weight', torch.as_tensor(args.pos_class_weight).float())
         else:
-            self.binary_head = nn.Linear(ts_demo_emb_size,1)
-            self.pos_class_weight = torch.tensor(args.pos_class_weight)
+            self.binary_head = nn.Linear(ts_demo_emb_size,args.num_labels)
+            self.register_buffer('pos_class_weight', torch.as_tensor(args.pos_class_weight).float())
 
     def binary_cls_final(self, logits, labels):
         if labels is not None:
@@ -58,8 +55,3 @@ class TimeSeriesModel(nn.Module):
                                     pos_weight=self.pos_class_weight)
         else:
             return F.sigmoid(logits)
-        
-    def forecast_final(self, ts_emb, forecast_values, forecast_mask):
-        pred = self.forecast_head(ts_emb) # bsz, V
-        return (forecast_mask*(pred-forecast_values)**2).sum()/forecast_mask.sum()
-        

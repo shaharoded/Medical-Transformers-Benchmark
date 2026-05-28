@@ -7,6 +7,9 @@ import json
 from pytz import timezone
 from tqdm import tqdm
 tqdm.pandas()
+_local_hf_cache = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".hf_cache"))
+os.environ["HF_HOME"] = _local_hf_cache
+os.environ["TRANSFORMERS_CACHE"] = _local_hf_cache
 from transformers import set_seed
 import numpy as np
 import torch

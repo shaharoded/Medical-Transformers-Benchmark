@@ -10,7 +10,19 @@ class Dataset:
     def __init__(self, args) -> None:
         # read data
         filepath = '../data/processed/'+args.dataset+'.pkl'
-        data, oc, train_ids, val_ids, test_ids = pickle.load(open(filepath,'rb'))
+        loaded = pickle.load(open(filepath,'rb'))
+        if len(loaded)==6:
+            data, oc, train_ids, val_ids, test_ids, metadata = loaded
+        else:
+            data, oc, train_ids, val_ids, test_ids = loaded
+            metadata = {}
+        args.outcome_names = metadata.get('outcome_names', ['in_hospital_mortality'])
+        args.num_labels = len(args.outcome_names)
+        args.static_varis = metadata.get('static_varis', None)
+        args.input_hours = metadata.get('input_hours', 48.0)
+        args.horizon_hours = metadata.get('horizon_hours', 288.0)
+        self.args = args
+        self.first_hours = None
         run, totalruns = list(map(int, args.run.split('o')))
         num_train = int(np.ceil(args.train_frac*len(train_ids)))
         start = int(np.linspace(0,len(train_ids)-num_train,totalruns)[run-1])
@@ -42,29 +54,35 @@ class Dataset:
         data['ts_ind'] = data['ts_id'].map(ts_id_to_ind)
 
         # Get y and N
-        oc = oc.loc[oc.ts_id.isin(sup_ts_ids)]
+        oc = oc.loc[oc.ts_id.isin(sup_ts_ids)].copy()
         oc['ts_ind'] = oc['ts_id'].map(ts_id_to_ind)
         oc = oc.sort_values(by='ts_ind')
-        y = np.array(oc['in_hospital_mortality'])
+        y = np.array(oc[args.outcome_names]).astype(float)
+        if y.ndim==1:
+            y = y.reshape(-1, 1)
+        first_hour_cols = [o+'__first_hour' for o in args.outcome_names]
+        if all(c in oc.columns for c in first_hour_cols):
+            self.first_hours = np.array(oc[first_hour_cols]).astype(float)
         N = len(sup_ts_ids)
 
         # To save
         self.N = N
         self.y = y
-        self.args = args
         self.static_varis = static_varis
+        self.ind_to_ts_id = {i:ts_id for ts_id,i in ts_id_to_ind.items()}
         self.splits = {'train':[ts_id_to_ind[i] for i in train_ids],
                        'val':[ts_id_to_ind[i] for i in val_ids],
                        'test':[ts_id_to_ind[i] for i in test_ids]}
         self.splits['eval_train'] = self.splits['train'][:2000]
         self.train_cycler = CycleIndex(self.splits['train'], args.train_batch_size)
-        num_train, num_train_pos = len(train_ids), y[self.splits['train']].sum()
-        args.pos_class_weight = (num_train-num_train_pos)/num_train_pos
+        num_train = len(train_ids)
+        num_train_pos = y[self.splits['train']].sum(axis=0)
+        args.pos_class_weight = (num_train-num_train_pos)/np.maximum(num_train_pos, 1)
         args.logger.write('pos class weight: '+str(args.pos_class_weight))
         args.logger.write('% pos class in train, val, test splits: '
-                          +str([num_train_pos/num_train, 
-                                y[self.splits['val']].sum()/len(val_ids),
-                                y[self.splits['test']].sum()/len(test_ids)]))
+                          +str([num_train_pos/num_train,
+                                y[self.splits['val']].sum(axis=0)/len(val_ids),
+                                y[self.splits['test']].sum(axis=0)/len(test_ids)]))
         
         if 'llm' in args.model_type:
             self.data = data
@@ -190,11 +208,17 @@ class Dataset:
                 self.holdout_masks = holdout_masks
         
     def get_static_varis(self, dataset):
-        if dataset=='mimic_iii':
+        if getattr(self.args, 'static_varis', None) is not None:
+            static_varis = self.args.static_varis
+        elif dataset=='mimic_iii':
             static_varis = ['Age', 'Gender']
         elif dataset=='physionet_2012':
             static_varis = ['Age', 'Gender', 'Height', 'ICUType_1',
                             'ICUType_2', 'ICUType_3', 'ICUType_4']
+        elif dataset=='user_mimic_iv':
+            static_varis = ['age_at_admission', 'gender', 'admission_type',
+                            'has_diabetes_type1', 'has_diabetes_type2',
+                            'has_hypertension', 'has_obesity']
         return static_varis
 
     def get_static_data(self, data):
