@@ -33,21 +33,21 @@ Original paper:
 Use the workspace venv:
 
 ```powershell
-& ..\.venv\Scripts\python.exe -m pip install pandas tqdm scikit-learn transformers==4.35.2 torch
+& .\.venv\Scripts\python.exe -m pip install pandas tqdm scikit-learn transformers==4.35.2 torch
 ```
 
 ## Preprocess
 
-From `STraTS/`:
+From the repository root:
 
 ```powershell
-& ..\.venv\Scripts\python.exe src\preprocess_user_mimic_iv.py
+& .\.venv\Scripts\python.exe src\preprocess_user_mimic_iv.py
 ```
 
-This creates `../data/processed/user_mimic_iv.pkl` from:
+This creates `data/processed/user_mimic_iv.pkl` from:
 
-- `../data/temporal_data.csv`
-- `../data/context_data.csv`
+- `data/temporal_data.csv`
+- `data/context_data.csv`
 
 The default comparable outcomes are:
 
@@ -72,10 +72,10 @@ have future positives.
 ## Train
 
 ```powershell
-& ..\.venv\Scripts\python.exe src\main.py --dataset user_mimic_iv --model_type strats --run 1o1 --train_frac 1.0 --device cpu
+& .\.venv\Scripts\python.exe src\main.py --dataset user_mimic_iv --model_type strats --run 1o1 --train_frac 1.0 --device cpu
 ```
 
-Outputs are written under `../outputs/user_mimic_iv/...`, including:
+Outputs are written under `outputs/user_mimic_iv/...`, including:
 
 - `test_per_outcome_metrics.csv`
 - `test_predictions.csv`

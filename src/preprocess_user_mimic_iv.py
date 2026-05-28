@@ -36,9 +36,9 @@ GLUCOSE_CONCEPT_REGEX = r"^(?:BASE_)?GLUCOSE_MEASURE(?:MENT)?$"
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--temporal_csv", default="../../data/temporal_data.csv")
-    parser.add_argument("--context_csv", default="../../data/context_data.csv")
-    parser.add_argument("--output_path", default="../data/processed/user_mimic_iv.pkl")
+    parser.add_argument("--temporal_csv", default="data/temporal_data.csv")
+    parser.add_argument("--context_csv", default="data/context_data.csv")
+    parser.add_argument("--output_path", default="data/processed/user_mimic_iv.pkl")
     parser.add_argument("--input_days", type=float, default=2.0)
     parser.add_argument("--horizon_days", type=float, default=12.0)
     parser.add_argument("--label_mode", choices=["anytime", "future"], default="future")

@@ -9,7 +9,9 @@ import os
 class Dataset:
     def __init__(self, args) -> None:
         # read data
-        filepath = '../data/processed/'+args.dataset+'.pkl'
+        filepath = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), '..', 'data', 'processed', args.dataset+'.pkl')
+        )
         loaded = pickle.load(open(filepath,'rb'))
         if len(loaded)==6:
             data, oc, train_ids, val_ids, test_ids, metadata = loaded

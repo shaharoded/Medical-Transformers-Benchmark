@@ -56,7 +56,7 @@ def set_output_dir(args: argparse.Namespace) -> None:
     if args.output_dir is None:
         if args.load_ckpt_path is not None:
             args.output_dir_prefix = 'finetune_'+args.output_dir_prefix
-        args.output_dir = '../outputs/'+args.dataset+'/'+args.output_dir_prefix
+        args.output_dir = 'outputs/'+args.dataset+'/'+args.output_dir_prefix
         args.output_dir += args.model_type
         for param in ['num_layers', 'hid_dim', 'num_heads', 'dropout', 'attention_dropout', 'lr']:
             args.output_dir += ','+param+':'+str(getattr(args, param))
