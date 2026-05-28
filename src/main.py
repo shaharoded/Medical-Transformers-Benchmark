@@ -4,6 +4,7 @@ from utils import Logger, set_all_seeds
 import torch
 from dataset import Dataset
 from modeling_strats import Strats
+from modeling_grud import GRUD_TS
 import numpy as np
 from tqdm import tqdm
 from transformers.optimization import AdamW
@@ -22,7 +23,7 @@ def parse_args() -> argparse.Namespace:
 
     # model related arguments
     parser.add_argument('--model_type', type=str, default='strats',
-                        choices=['strats','istrats'])
+                        choices=['strats','istrats','grud'])
     parser.add_argument('--load_ckpt_path', type=str, default=None)
     ##  strats and istrats
     parser.add_argument('--max_obs', type=int, default=880)
@@ -31,6 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--num_heads', type=int, default=4)
     parser.add_argument('--dropout', type=float, default=0.2)
     parser.add_argument('--attention_dropout', type=float, default=0.2)
+    parser.add_argument('--max_timesteps', type=int, default=880)
     # training/eval realated arguments
     parser.add_argument('--output_dir', type=str, default=None)
     parser.add_argument('--output_dir_prefix', type=str, default='')
@@ -58,7 +60,10 @@ def set_output_dir(args: argparse.Namespace) -> None:
             args.output_dir_prefix = 'finetune_'+args.output_dir_prefix
         args.output_dir = 'outputs/'+args.dataset+'/'+args.output_dir_prefix
         args.output_dir += args.model_type
-        for param in ['num_layers', 'hid_dim', 'num_heads', 'dropout', 'attention_dropout', 'lr']:
+        params = ['num_layers', 'hid_dim', 'num_heads', 'dropout', 'attention_dropout', 'lr']
+        if args.model_type=='grud':
+            params = ['hid_dim', 'dropout', 'max_timesteps', 'lr']
+        for param in params:
             args.output_dir += ','+param+':'+str(getattr(args, param))
         for param in ['train_frac', 'run']:
             args.output_dir += '|'+param+':'+str(getattr(args, param))
@@ -84,7 +89,7 @@ if __name__ == "__main__":
     dataset = Dataset(args)
 
     # load model
-    model = Strats(args)
+    model = Strats(args) if args.model_type in ['strats', 'istrats'] else GRUD_TS(args)
     model.to(args.device)
     count_parameters(args.logger, model)
     if args.load_ckpt_path is not None:

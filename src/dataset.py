@@ -97,7 +97,7 @@ class Dataset:
         if args.model_type in ['strats', 'istrats']:
             data = data.sample(frac=1)
             data = data.groupby('ts_id').head(args.max_obs)
-        elif args.model_type in ['grud', 'interpnet']:
+        elif args.model_type=='grud':
             timestamps = data[['ts_id','minute']].drop_duplicates().sample(frac=1)
             timestamps = timestamps.groupby('ts_id').head(args.max_timesteps)
             data = data.merge(timestamps, on=['ts_id','minute'], how='inner')
@@ -108,7 +108,7 @@ class Dataset:
             pt_var_path = os.path.join(os.path.dirname(args.load_ckpt_path), 
                                        'pt_saved_variables.pkl')
             variables, means_stds, max_minute = pickle.load(open(pt_var_path,'rb'))
-        if args.model_type in ['strats','istrats','grud','interpnet']:
+        if args.model_type in ['strats','istrats','grud']:
             if not(args.finetune):
                 means_stds = data.loc[data.ts_id.isin(train_ids)].groupby(
                                     'variable').agg({'value':['mean', 'std']})
@@ -125,37 +125,7 @@ class Dataset:
         V = len(variables)
         args.V = V
         args.logger.write('# TS variables: '+str(V))
-        if args.model_type in ['gru', 'tcn', 'sand']:
-            # get hourly agg ts with missingness and time since last obs
-            data['minute'] = data['minute'].apply(lambda x:max(1, int(np.ceil(x/60)))-1)
-            T = data.minute.max()+1
-            args.T = T
-            args.logger.write('# intervals: '+str(T))
-            values = np.zeros((N,T,V))
-            obs = np.zeros((N,T,V))
-            for row in tqdm(data.itertuples()):
-                vind = var_to_ind[row.variable]
-                tstep = row.minute
-                values[row.ts_ind, tstep, vind] = row.value
-                obs[row.ts_ind, tstep, vind] = 1
-            # Generate delta.
-            delta = np.zeros((N,T,V))
-            delta[:,0,:] = obs[:,0,:]
-            for t in range(1,T):
-                delta[:,t,:] = obs[:,t,:]*0 + (1-obs[:,t,:])*(1+delta[:,t-1,:])
-            delta = delta/T
-            # mean fill obs
-            train_ind = self.splits['train']
-            means = (values[train_ind]*obs[train_ind]).sum(axis=(0,1))\
-                        /obs[train_ind].sum(axis=(0,1))
-            values = values*obs + (1-obs)*means.reshape((1,1,V))
-            # normalize values
-            means = values[train_ind].mean(axis=(0,1), keepdims=True)
-            stds = values[train_ind].std(axis=(0,1), keepdims=True)
-            stds = (stds==0)*1 + (stds>0)*stds
-            values = (values-means)/stds
-            self.X = np.concatenate((values, obs, delta), axis=-1)
-        elif args.model_type in ['strats', 'istrats']:
+        if args.model_type in ['strats', 'istrats']:
             values = [[] for i in range(N)]
             times = [[] for i in range(N)]
             varis = [[] for i in range(N)]
@@ -165,12 +135,8 @@ class Dataset:
                 times[row.ts_ind].append(row.minute)
                 varis[row.ts_ind].append(var_to_ind[row.variable])
             self.values, self.times, self.varis = values, times, varis
-        elif args.model_type in ['grud','interpnet']:
-            if args.model_type=='grud':
-                deltas = [[] for i in range(N)]
-            elif args.model_type=='interpnet':
-                times = [[] for i in range(N)]
-                holdout_masks = [[] for i in range(N)]
+        elif args.model_type=='grud':
+            deltas = [[] for i in range(N)]
             values = [[] for i in range(N)]
             mask = [[] for i in range(N)]
             for ts_ind, curr_data in data.groupby('ts_ind'):
@@ -183,31 +149,15 @@ class Dataset:
                     vind = var_to_ind[row.variable]
                     curr_values[time_idx, vind] = row.value
                     curr_mask[time_idx, vind] = 1
-                if args.model_type=='grud':
-                    curr_delta = np.zeros((T,V))
-                    for t in range(1,T):
-                        curr_delta[t,:] = curr_times[t]-curr_times[t-1] \
-                                        + (1-curr_mask[t-1])*curr_delta[t-1,:]
-                    deltas[ts_ind] = curr_delta/(24*60*60) # days
-                elif args.model_type=='interpnet':
-                    times[ts_ind] = list(np.array(curr_times)/60) # hours
-                    curr_mask[0,:] = 1
-                    hmask = np.copy(curr_mask)
-                    for j in range(args.V):
-                        obs_time_indices = np.argwhere(curr_mask[:,j]).reshape(-1)
-                        num_to_mask = int(0.2*len(obs_time_indices))
-                        if num_to_mask>0:
-                            to_mask = np.random.choice(obs_time_indices, num_to_mask, replace=False)
-                            hmask[to_mask,j] = 0
-                    holdout_masks[ts_ind] = hmask
+                curr_delta = np.zeros((T,V))
+                for t in range(1,T):
+                    curr_delta[t,:] = curr_times[t]-curr_times[t-1] \
+                                    + (1-curr_mask[t-1])*curr_delta[t-1,:]
+                deltas[ts_ind] = curr_delta/(24*60) # days
                 values[ts_ind] = curr_values
                 mask[ts_ind] = curr_mask
             self.values, self.mask = values, mask
-            if args.model_type=='grud':
-                self.deltas = deltas
-            elif args.model_type=='interpnet':
-                self.times = times
-                self.holdout_masks = holdout_masks
+            self.deltas = deltas
         
     def get_static_varis(self, dataset):
         if getattr(self.args, 'static_varis', None) is not None:
@@ -272,12 +222,6 @@ class Dataset:
             return self.get_batch_strats(ind)
         elif self.args.model_type=='grud':
             return self.get_batch_grud(ind)
-        elif self.args.model_type=='interpnet':
-            return self.get_batch_interpnet(ind)
-        elif self.args.model_type in ['gru', 'tcn', 'sand']:
-            return {'ts':torch.FloatTensor(self.X[ind]),
-                    'demo':torch.FloatTensor(self.demo[ind]), 
-                    'labels':torch.FloatTensor(self.y[ind])}
         
         
     def get_batch_grud(self, ind):
@@ -299,30 +243,6 @@ class Dataset:
                 'seq_len':torch.LongTensor(num_timestamps),
                 'demo':torch.FloatTensor(self.demo[ind]), 
                 'labels':torch.FloatTensor(self.y[ind])}
-    
-    def get_batch_interpnet(self, ind):
-        times = [self.times[i] for i in ind]
-        values = [self.values[i] for i in ind]
-        masks = [self.mask[i] for i in ind]
-        hmasks = [self.holdout_masks[i] for i in ind]
-
-        num_timestamps = np.array(list(map(len, times)))
-        max_timestamps = max(num_timestamps)
-        pad_lens = max_timestamps-num_timestamps
-        V = self.args.V
-        pad_mats = [np.zeros((l,V)) for l in pad_lens]
-        hmasks = torch.FloatTensor(np.stack([np.concatenate((delta,pad), axis=0) 
-                                    for delta,pad in zip(hmasks,pad_mats)]))
-        values = torch.FloatTensor(np.stack([np.concatenate((delta,pad), axis=0) 
-                                    for delta,pad in zip(values,pad_mats)]))
-        masks = torch.FloatTensor(np.stack([np.concatenate((delta,pad), axis=0) 
-                                    for delta,pad in zip(masks,pad_mats)]))
-        times = torch.FloatTensor([t+[0]*p for t,p in zip(times, pad_lens)])
-        return {'t':times, 'x':values, 'm':masks, 'h':hmasks,
-                'demo':torch.FloatTensor(self.demo[ind]), 
-                'labels':torch.FloatTensor(self.y[ind])}
-
-
     def get_batch_strats(self, ind):
         demo = torch.FloatTensor(self.demo[ind]) # N,D
         num_obs = [len(self.values[i]) for i in ind]

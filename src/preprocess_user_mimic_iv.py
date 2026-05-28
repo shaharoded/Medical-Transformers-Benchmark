@@ -6,44 +6,34 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-
-DEFAULT_OUTCOMES = [
-    "DEATH",
-    "DISGLYCEMIA_Hyperglycemia",
-    "DISGLYCEMIA_Hypoglycemia",
-    "KIDNEY_COMPLICATION",
-    "CARDIO-VASCULAR_DISORDER",
-    "NERVOUS_SYSTEM_DISORDER",
-    "NEUROVASCULAR_COMPLICATION",
-    "SKIN_ULCER",
-    "RETINOPATHY",
-    "KETOACIDOSIS",
-]
-
-EVENT_OUTCOME_REGEX = {
-    "DEATH": r"^DEATH(?:_EVENT)?$",
-    "KIDNEY_COMPLICATION": r"^KIDNEY_COMPLICATION(?:_EVENT)?$",
-    "CARDIO-VASCULAR_DISORDER": r"^CARDIO-?VASCULAR_DISORDER(?:_EVENT)?$",
-    "NERVOUS_SYSTEM_DISORDER": r"^NERVOUS_SYSTEM_DISORDER(?:_EVENT)?$",
-    "NEUROVASCULAR_COMPLICATION": r"^NEUROVASCULAR_COMPLICATION(?:_EVENT)?$",
-    "SKIN_ULCER": r"^SKIN_ULCER(?:_EVENT)?$",
-    "RETINOPATHY": r"^RETINOPATHY(?:_EVENT)?$",
-    "KETOACIDOSIS": r"^KETOACIDOSIS(?:_EVENT)?$",
-}
-
-GLUCOSE_CONCEPT_REGEX = r"^(?:BASE_)?GLUCOSE_MEASURE(?:MENT)?$"
+from config import (
+    CONCEPT_SUPPORT_THRESHOLD,
+    DEFAULT_CONTEXT_CSV,
+    DEFAULT_PROCESSED_PATH,
+    DEFAULT_TEMPORAL_CSV,
+    EVENT_OUTCOME_REGEX,
+    GLUCOSE_CONCEPT_REGEX,
+    GLUCOSE_HYPER_RECURRENT_THRESHOLD,
+    GLUCOSE_HYPER_SEVERE_THRESHOLD,
+    GLUCOSE_HYPO_RECURRENT_THRESHOLD,
+    GLUCOSE_HYPO_SEVERE_THRESHOLD,
+    OUTCOME_NAMES,
+    OUTCOME_SUPPORT_THRESHOLD,
+)
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--temporal_csv", default="data/temporal_data.csv")
-    parser.add_argument("--context_csv", default="data/context_data.csv")
-    parser.add_argument("--output_path", default="data/processed/user_mimic_iv.pkl")
+    parser.add_argument("--temporal_csv", default=DEFAULT_TEMPORAL_CSV)
+    parser.add_argument("--context_csv", default=DEFAULT_CONTEXT_CSV)
+    parser.add_argument("--output_path", default=DEFAULT_PROCESSED_PATH)
     parser.add_argument("--input_days", type=float, default=2.0)
     parser.add_argument("--horizon_days", type=float, default=12.0)
     parser.add_argument("--label_mode", choices=["anytime", "future"], default="future")
     parser.add_argument("--seed", type=int, default=2023)
-    parser.add_argument("--outcomes", nargs="*", default=DEFAULT_OUTCOMES)
+    parser.add_argument("--outcomes", nargs="*", default=OUTCOME_NAMES)
+    parser.add_argument("--concept_support_threshold", type=float, default=CONCEPT_SUPPORT_THRESHOLD)
+    parser.add_argument("--outcome_support_threshold", type=float, default=OUTCOME_SUPPORT_THRESHOLD)
     parser.add_argument("--death_token", default="DEATH_EVENT")
     return parser.parse_args()
 
@@ -65,6 +55,31 @@ def _resolve_path(path):
 
 def _matching_concepts(concepts, pattern):
     return sorted([c for c in concepts if pd.Series([c]).str.contains(pattern, regex=True).iloc[0]])
+
+
+def _patient_support_by_concept(frame, patient_count):
+    support = frame.groupby("ConceptName")["PatientId"].nunique() / patient_count
+    return support.sort_values(ascending=False)
+
+
+def _dysglycemia_events(glucose_rows, outcome_name, severe_threshold, recurrent_threshold, direction):
+    if len(glucose_rows) == 0:
+        return glucose_rows.copy()
+    events = []
+    comparator = np.less_equal if direction == "low" else np.greater_equal
+    for _, group in glucose_rows.sort_values(["PatientId", "minute"]).groupby("PatientId"):
+        group = group.copy()
+        severe = comparator(group["numeric_value"], severe_threshold)
+        recurrent = comparator(group["numeric_value"], recurrent_threshold)
+        recurrent_count = recurrent.groupby(group["PatientId"]).cumsum()
+        event_mask = severe | (recurrent & (recurrent_count >= 2))
+        curr = group.loc[event_mask].copy()
+        if len(curr):
+            curr["ConceptName"] = outcome_name
+            events.append(curr)
+    if not events:
+        return glucose_rows.iloc[0:0].copy()
+    return pd.concat(events, ignore_index=True)
 
 
 def main():
@@ -90,6 +105,7 @@ def main():
 
     context = context.loc[context["PatientId"].isin(admissions["PatientId"])].copy()
     all_ids = np.array(sorted(context["PatientId"].unique()))
+    patient_count = len(all_ids)
     train_valid_ids, test_ids = train_test_split(
         all_ids, test_size=0.2, random_state=args.seed
     )
@@ -110,12 +126,47 @@ def main():
     ]
     source_outcome_set = {alias for aliases in event_alias_map.values() for alias in aliases}
 
-    label_rows = []
     outcome_source = temporal.loc[
         temporal["ConceptName"].isin(source_outcome_set | set(glucose_concepts))
     ].copy()
     outcome_source["numeric_value"] = _to_numeric_value(outcome_source["Value"])
-    for pid, group in outcome_source.groupby("PatientId"):
+
+    outcome_event_frames = []
+    for outcome, aliases in event_alias_map.items():
+        curr = outcome_source.loc[outcome_source["ConceptName"].isin(aliases)].copy()
+        if len(curr):
+            curr["ConceptName"] = outcome
+            outcome_event_frames.append(curr)
+    glucose_rows = outcome_source.loc[
+        outcome_source["ConceptName"].isin(glucose_concepts)
+        & outcome_source["numeric_value"].notna()
+    ].copy()
+    hyper = _dysglycemia_events(
+        glucose_rows,
+        "DISGLYCEMIA_Hyperglycemia",
+        GLUCOSE_HYPER_SEVERE_THRESHOLD,
+        GLUCOSE_HYPER_RECURRENT_THRESHOLD,
+        "high",
+    )
+    if len(hyper):
+        outcome_event_frames.append(hyper)
+    hypo = _dysglycemia_events(
+        glucose_rows,
+        "DISGLYCEMIA_Hypoglycemia",
+        GLUCOSE_HYPO_SEVERE_THRESHOLD,
+        GLUCOSE_HYPO_RECURRENT_THRESHOLD,
+        "low",
+    )
+    if len(hypo):
+        outcome_event_frames.append(hypo)
+    outcome_events = (
+        pd.concat(outcome_event_frames, ignore_index=True)
+        if outcome_event_frames
+        else pd.DataFrame(columns=outcome_source.columns)
+    )
+
+    label_rows = []
+    for pid, group in outcome_events.groupby("PatientId"):
         labels = {"PatientId": pid}
         if args.label_mode == "future":
             in_window = group.loc[
@@ -125,18 +176,7 @@ def main():
         else:
             in_window = group
         for outcome in outcome_names:
-            if outcome == "DISGLYCEMIA_Hyperglycemia":
-                rows = in_window.loc[
-                    in_window["ConceptName"].isin(glucose_concepts)
-                    & (in_window["numeric_value"] >= 180.0)
-                ]
-            elif outcome == "DISGLYCEMIA_Hypoglycemia":
-                rows = in_window.loc[
-                    in_window["ConceptName"].isin(glucose_concepts)
-                    & (in_window["numeric_value"] <= 70.0)
-                ]
-            else:
-                rows = in_window.loc[in_window["ConceptName"].isin(event_alias_map.get(outcome, []))]
+            rows = in_window.loc[in_window["ConceptName"] == outcome]
             labels[outcome] = int(len(rows) > 0)
             labels[outcome + "__first_hour"] = (
                 float(rows["minute"].min() / 60.0) if len(rows) else np.inf
@@ -147,6 +187,18 @@ def main():
     for outcome in outcome_names:
         labels[outcome] = labels[outcome].fillna(0).astype(int)
         labels[outcome + "__first_hour"] = labels[outcome + "__first_hour"].fillna(np.inf)
+    outcome_support = {
+        outcome: float(labels[outcome].sum() / patient_count)
+        for outcome in outcome_names
+    }
+    dropped_outcomes = [
+        outcome for outcome in outcome_names
+        if outcome_support[outcome] < args.outcome_support_threshold
+    ]
+    outcome_names = [
+        outcome for outcome in outcome_names
+        if outcome_support[outcome] >= args.outcome_support_threshold
+    ]
     labels = labels.rename(columns={"PatientId": "ts_id"})
 
     terminal_aliases = {"RELEASE", "RELEASE_EVENT", args.death_token}
@@ -156,6 +208,16 @@ def main():
         (temporal["minute"] <= input_minutes)
         & (~temporal["ConceptName"].isin(source_outcome_set))
         & (~temporal["ConceptName"].isin(terminal_aliases))
+    ].copy()
+    concept_support = _patient_support_by_concept(temporal_inputs, patient_count)
+    kept_input_concepts = set(
+        concept_support.loc[concept_support >= args.concept_support_threshold].index
+    )
+    dropped_input_concepts = sorted(
+        concept_support.loc[concept_support < args.concept_support_threshold].index
+    )
+    temporal_inputs = temporal_inputs.loc[
+        temporal_inputs["ConceptName"].isin(kept_input_concepts)
     ].copy()
     temporal_inputs["value"] = _to_numeric_value(temporal_inputs["Value"])
 
@@ -182,10 +244,20 @@ def main():
     metadata = {
         "static_varis": static_varis,
         "outcome_names": outcome_names,
+        "configured_outcome_names": args.outcomes,
+        "outcome_support": outcome_support,
+        "dropped_outcomes": dropped_outcomes,
         "outcome_source_aliases": event_alias_map,
         "glucose_concepts": glucose_concepts,
-        "glucose_hyper_threshold": 180.0,
-        "glucose_hypo_threshold": 70.0,
+        "glucose_hyper_severe_threshold": GLUCOSE_HYPER_SEVERE_THRESHOLD,
+        "glucose_hyper_recurrent_threshold": GLUCOSE_HYPER_RECURRENT_THRESHOLD,
+        "glucose_hypo_severe_threshold": GLUCOSE_HYPO_SEVERE_THRESHOLD,
+        "glucose_hypo_recurrent_threshold": GLUCOSE_HYPO_RECURRENT_THRESHOLD,
+        "synthetic_outcomes": ["DISGLYCEMIA_Hyperglycemia", "DISGLYCEMIA_Hypoglycemia"],
+        "concept_support_threshold": args.concept_support_threshold,
+        "outcome_support_threshold": args.outcome_support_threshold,
+        "kept_input_concepts": sorted(kept_input_concepts),
+        "dropped_input_concepts": dropped_input_concepts,
         "death_token": args.death_token,
         "input_hours": args.input_days * 24.0,
         "horizon_hours": args.horizon_days * 24.0,
@@ -200,6 +272,8 @@ def main():
     print("Wrote", args.output_path)
     print("Rows:", len(data), "patients:", data["ts_id"].nunique())
     print("Outcomes:", outcome_names)
+    print("Dropped low-support outcomes:", dropped_outcomes)
+    print("Dropped low-support input concepts:", dropped_input_concepts)
 
 
 if __name__ == "__main__":

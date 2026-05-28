@@ -36,8 +36,6 @@ class TimeSeriesModel(nn.Module):
                                           nn.Linear(args.hid_dim*2, args.hid_dim))
         if args.model_type=='istrats':
             ts_demo_emb_size = args.hid_dim+args.D
-        elif args.model_type=='sand':
-            ts_demo_emb_size = args.hid_dim*args.M+args.hid_dim
         else:
             ts_demo_emb_size = args.hid_dim*2
         self.finetune = args.load_ckpt_path is not None

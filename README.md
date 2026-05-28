@@ -1,8 +1,20 @@
-# STRATS Benchmark for MIMIC-IV Shaped Thesis Data
+# Medical-Transformers Benchmark
 
-This copy is trimmed to the supervised STRATS comparison path used in this
-workspace. The original auxiliary baselines, pretraining scripts, and
-PhysioNet/MIMIC-III preprocessors were removed to keep the benchmark focused.
+Supervised horizon-risk benchmarks for MIMIC-IV-shaped clinical trajectory data.
+The repository currently supports two discriminative baselines:
+
+- `strats`: sparse irregular time-series transformer.
+- `grud`: GRU-D recurrent baseline for irregular time series with missingness.
+
+Both models answer the same task:
+
+```text
+first 48 hours of temporal data + static context -> outcome risk over hours 48-336
+```
+
+They do not generate trajectories. AUROC/AUPRC are the primary comparable
+metrics. The exported MAE file is a simplified peak-risk timing proxy, not a
+true autoregressive onset-time metric.
 
 ## Authors and Credit
 
@@ -28,56 +40,110 @@ Original paper:
 }
 ```
 
-## Environment
+## Setup
 
-Use the workspace venv:
+Run all commands from the repository root.
+
+Create/use a venv and install dependencies:
 
 ```powershell
+python -m venv .venv
 & .\.venv\Scripts\python.exe -m pip install pandas tqdm scikit-learn transformers==4.35.2 torch
+```
+
+Expected input files:
+
+```text
+data/mimic-iv-input-data.csv
+data/context_data.csv
 ```
 
 ## Preprocess
 
-From the repository root:
+Build the processed benchmark pickle:
 
 ```powershell
 & .\.venv\Scripts\python.exe src\preprocess_user_mimic_iv.py
 ```
 
-This creates `data/processed/user_mimic_iv.pkl` from:
+This writes:
 
-- `data/temporal_data.csv`
-- `data/context_data.csv`
-
-The default comparable outcomes are:
-
-- `DEATH`
-- `DISGLYCEMIA_Hyperglycemia` from glucose measurements `>= 180`
-- `DISGLYCEMIA_Hypoglycemia` from glucose measurements `<= 70`
-- `KIDNEY_COMPLICATION`
-- `CARDIO-VASCULAR_DISORDER`
-- `NERVOUS_SYSTEM_DISORDER`
-- `NEUROVASCULAR_COMPLICATION`
-- `SKIN_ULCER`
-- `RETINOPATHY`
-- `KETOACIDOSIS`
-
-Preprocessing defaults to `--label_mode future`: first `--input_days` days are
-used as STRATS input, and labels are positive when the outcome occurs in the
-following `--horizon_days` days. In the current CSV, the non-glucose
-complication concepts are timestamped at admission, so they have zero positives
-under this future-horizon definition. `DEATH` and glucose-threshold outcomes do
-have future positives.
-
-## Train
-
-```powershell
-& .\.venv\Scripts\python.exe src\main.py --dataset user_mimic_iv --model_type strats --run 1o1 --train_frac 1.0 --device cpu
+```text
+data/processed/user_mimic_iv.pkl
 ```
 
-Outputs are written under `outputs/user_mimic_iv/...`, including:
+The configured targets live in `src/config.py`:
 
-- `test_per_outcome_metrics.csv`
-- `test_predictions.csv`
-- `test_risk_df.csv`
-- `test_peak_mae_hours.csv`
+- `DEATH`
+- `DISGLYCEMIA_Hyperglycemia`
+- `DISGLYCEMIA_Hypoglycemia`
+- `KIDNEY_COMPLICATION`
+- `CARDIO-VASCULAR_DISORDER`
+- `HYPEROSMOLALITY`
+
+Dysglycemia outcomes are synthesized during preprocessing:
+
+- Hypoglycemia: one glucose `<= 54`, or the second and later glucose values `<= 70`.
+- Hyperglycemia: one glucose `>= 250`, or the second and later glucose values `>= 180`.
+
+Low-support input concepts and configured outcomes are filtered using
+`CONCEPT_SUPPORT_THRESHOLD` and `OUTCOME_SUPPORT_THRESHOLD` in `src/config.py`.
+
+## Train STRATS
+
+On a GPU machine:
+
+```powershell
+& .\.venv\Scripts\python.exe src\main.py --dataset user_mimic_iv --model_type strats --run 1o1 --train_frac 1.0 --device cuda --output_dir outputs/user_mimic_iv/strats
+```
+
+If CUDA is available, `--device cuda` can be omitted because the script auto-selects
+GPU. Keep it explicit when launching jobs so failures are obvious.
+
+## Train GRU-D
+
+On a GPU machine:
+
+```powershell
+& .\.venv\Scripts\python.exe src\main.py --dataset user_mimic_iv --model_type grud --run 1o1 --train_frac 1.0 --device cuda --output_dir outputs/user_mimic_iv/grud
+```
+
+GRU-D uses the same labels, splits, static context, and evaluator as STRATS, but
+converts sparse events into value/mask/delta tensors internally.
+
+## Results
+
+Each model output directory contains:
+
+- `checkpoint_best.bin`: best validation checkpoint.
+- `log.txt`: training and evaluation log.
+- `test_per_outcome_metrics.csv`: AUROC/AUPRC/minRP/support by outcome.
+- `test_predictions.csv`: patient-level labels and predicted probabilities.
+- `test_risk_df.csv`: daily repeated risk rows for compatibility with the evaluation shape.
+- `test_peak_mae_hours.csv`: simplified peak-risk timing proxy.
+
+Recommended comparison files:
+
+```text
+outputs/user_mimic_iv/strats/test_per_outcome_metrics.csv
+outputs/user_mimic_iv/grud/test_per_outcome_metrics.csv
+```
+
+## Smoke Tests
+
+These small CPU commands verify that preprocessing, model construction, batching,
+loss computation, and the training loop work. They are not meaningful model runs.
+They intentionally skip validation, so use the full training commands above to
+produce result CSVs.
+
+STRATS smoke test:
+
+```powershell
+& .\.venv\Scripts\python.exe src\main.py --dataset user_mimic_iv --model_type strats --run 1o1 --train_frac 0.01 --device cpu --max_epochs 1 --train_batch_size 64 --eval_batch_size 128 --validate_after 999999 --max_obs 64 --hid_dim 16 --num_layers 1 --num_heads 2 --output_dir outputs/smoke/strats
+```
+
+GRU-D smoke test:
+
+```powershell
+& .\.venv\Scripts\python.exe src\main.py --dataset user_mimic_iv --model_type grud --run 1o1 --train_frac 0.01 --device cpu --max_epochs 1 --train_batch_size 64 --eval_batch_size 128 --validate_after 999999 --max_timesteps 64 --hid_dim 16 --output_dir outputs/smoke/grud
+```
