@@ -1,4 +1,5 @@
 """This file contain common utility functions."""
+import argparse
 from datetime import datetime
 import string
 import os
@@ -14,6 +15,7 @@ from transformers import set_seed
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
 from torch.optim import Optimizer
 from typing import Any, Union
@@ -55,6 +57,55 @@ def set_all_seeds(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
     cudnn.benchmark = True
     set_seed(seed)
+
+
+def count_parameters(logger: Logger, model: nn.Module):
+    """Print model parameter counts."""
+    total = sum(p.numel() for p in model.parameters())
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    logger.write('\nModel details:')
+    logger.write('# parameters: '+str(total))
+    logger.write('# trainable parameters: '+str(trainable)+', '
+                 +str(100*trainable/total)+'%')
+
+    dtypes = {}
+    for _, p in model.named_parameters():
+        dtype = p.dtype
+        if dtype not in dtypes:
+            dtypes[dtype] = 0
+        dtypes[dtype] += p.numel()
+    logger.write('#params by dtype:')
+    for k, v in dtypes.items():
+        logger.write(str(k)+': '+str(v)+', '+str(100*v/total)+'%')
+
+
+class TimeSeriesModel(nn.Module):
+    def __init__(self, args: argparse.Namespace):
+        super().__init__()
+        self.args = args
+        if args.model_type!='istrats':
+            self.demo_emb = nn.Sequential(nn.Linear(args.D, args.hid_dim*2),
+                                          nn.Tanh(),
+                                          nn.Linear(args.hid_dim*2, args.hid_dim))
+        if args.model_type=='istrats':
+            ts_demo_emb_size = args.hid_dim+args.D
+        else:
+            ts_demo_emb_size = args.hid_dim*2
+        self.finetune = args.load_ckpt_path is not None
+        if self.finetune:
+            self.forecast_head = nn.Linear(ts_demo_emb_size, args.V)
+            self.binary_head = nn.Linear(args.V,args.num_labels)
+            self.register_buffer('pos_class_weight', torch.as_tensor(args.pos_class_weight).float())
+        else:
+            self.binary_head = nn.Linear(ts_demo_emb_size,args.num_labels)
+            self.register_buffer('pos_class_weight', torch.as_tensor(args.pos_class_weight).float())
+
+    def binary_cls_final(self, logits, labels):
+        if labels is not None:
+            return F.binary_cross_entropy_with_logits(logits, labels,
+                                    pos_weight=self.pos_class_weight)
+        else:
+            return F.sigmoid(logits)
 
 
 

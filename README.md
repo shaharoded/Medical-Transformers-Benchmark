@@ -16,6 +16,24 @@ They do not generate trajectories. AUROC/AUPRC are the primary comparable
 metrics. The exported MAE file is a simplified peak-risk timing proxy, not a
 true autoregressive onset-time metric.
 
+## TL;DR Results
+
+Full benchmark results are in [RESULTS.md](RESULTS.md).
+
+RunPod full-data test results:
+
+| Model | AUROC | AUPRC | F1@0.5 | Best F1 | minRP | MAE hours |
+|---|---:|---:|---:|---:|---:|---:|
+| STRATS | 0.9026 | 0.6028 | 0.5262 | 0.6010 | 0.5891 | 43.47 |
+| GRU-D | 0.8975 | 0.5855 | 0.5588 | 0.5856 | 0.5773 | 43.47 |
+
+STRATS is slightly stronger overall on AUROC/AUPRC/minRP in this run. GRU-D is
+competitive and slightly stronger on `DEATH`, `KIDNEY_COMPLICATION`, and
+`HYPEROSMOLALITY` AUROC. `F1@0.5` uses a fixed probability threshold of 0.5;
+`Best F1` is the best threshold sweep value on the test predictions. The
+identical MAE values come from the simplified horizon-risk timing proxy, not
+from a true event-time trajectory prediction.
+
 ## Authors and Credit
 
 Benchmark adaptation, data interface, multi-label outcome evaluation, and README:
@@ -63,7 +81,7 @@ data/context_data.csv
 Build the processed benchmark pickle:
 
 ```powershell
-& .\.venv\Scripts\python.exe src\preprocess_user_mimic_iv.py
+& .\.venv\Scripts\python.exe scripts\preprocess_user_mimic_iv.py
 ```
 
 This writes:
@@ -94,7 +112,7 @@ Low-support input concepts and configured outcomes are filtered using
 On a GPU machine:
 
 ```powershell
-& .\.venv\Scripts\python.exe src\main.py --dataset user_mimic_iv --model_type strats --run 1o1 --train_frac 1.0 --device cuda --output_dir outputs/user_mimic_iv/strats
+& .\.venv\Scripts\python.exe main.py --dataset user_mimic_iv --model_type strats --run 1o1 --train_frac 1.0 --device cuda --output_dir outputs/user_mimic_iv/strats
 ```
 
 If CUDA is available, `--device cuda` can be omitted because the script auto-selects
@@ -105,19 +123,51 @@ GPU. Keep it explicit when launching jobs so failures are obvious.
 On a GPU machine:
 
 ```powershell
-& .\.venv\Scripts\python.exe src\main.py --dataset user_mimic_iv --model_type grud --run 1o1 --train_frac 1.0 --device cuda --output_dir outputs/user_mimic_iv/grud
+& .\.venv\Scripts\python.exe main.py --dataset user_mimic_iv --model_type grud --run 1o1 --train_frac 1.0 --device cuda --output_dir outputs/user_mimic_iv/grud
 ```
 
 GRU-D uses the same labels, splits, static context, and evaluator as STRATS, but
 converts sparse events into value/mask/delta tensors internally.
 
+## Multi-Seed Runs
+
+For confidence intervals, run both models across five nominal seeds:
+
+```bash
+bash scripts/run_multiseed.sh
+```
+
+Defaults:
+
+```text
+SEEDS="2023 2024 2025 2026 2027"
+MODELS="strats grud"
+ROOT="outputs/user_mimic_iv/multiseed"
+```
+
+The script skips any seed folder that already has `test_per_outcome_metrics.csv`,
+so interrupted runs can be restarted. When all runs finish, it writes:
+
+```text
+outputs/user_mimic_iv/multiseed/summary.csv
+```
+
+To aggregate manually:
+
+```bash
+.venv/bin/python scripts/aggregate_seed_results.py --root outputs/user_mimic_iv/multiseed --models strats grud --output outputs/user_mimic_iv/multiseed/summary.csv
+```
+
 ## Results
+
+Full benchmark results from the full-data RunPod run are documented in
+[RESULTS.md](RESULTS.md).
 
 Each model output directory contains:
 
 - `checkpoint_best.bin`: best validation checkpoint.
 - `log.txt`: training and evaluation log.
-- `test_per_outcome_metrics.csv`: AUROC/AUPRC/minRP/support by outcome.
+- `test_per_outcome_metrics.csv`: AUROC/AUPRC/F1/minRP/support by outcome.
 - `test_predictions.csv`: patient-level labels and predicted probabilities.
 - `test_risk_df.csv`: daily repeated risk rows for compatibility with the evaluation shape.
 - `test_peak_mae_hours.csv`: simplified peak-risk timing proxy.
@@ -139,11 +189,11 @@ produce result CSVs.
 STRATS smoke test:
 
 ```powershell
-& .\.venv\Scripts\python.exe src\main.py --dataset user_mimic_iv --model_type strats --run 1o1 --train_frac 0.01 --device cpu --max_epochs 1 --train_batch_size 64 --eval_batch_size 128 --validate_after 999999 --max_obs 64 --hid_dim 16 --num_layers 1 --num_heads 2 --output_dir outputs/smoke/strats
+& .\.venv\Scripts\python.exe main.py --dataset user_mimic_iv --model_type strats --run 1o1 --train_frac 0.01 --device cpu --max_epochs 1 --train_batch_size 64 --eval_batch_size 128 --validate_after 999999 --max_obs 64 --hid_dim 16 --num_layers 1 --num_heads 2 --output_dir outputs/smoke/strats
 ```
 
 GRU-D smoke test:
 
 ```powershell
-& .\.venv\Scripts\python.exe src\main.py --dataset user_mimic_iv --model_type grud --run 1o1 --train_frac 0.01 --device cpu --max_epochs 1 --train_batch_size 64 --eval_batch_size 128 --validate_after 999999 --max_timesteps 64 --hid_dim 16 --output_dir outputs/smoke/grud
+& .\.venv\Scripts\python.exe main.py --dataset user_mimic_iv --model_type grud --run 1o1 --train_frac 0.01 --device cpu --max_epochs 1 --train_batch_size 64 --eval_batch_size 128 --validate_after 999999 --max_timesteps 64 --hid_dim 16 --output_dir outputs/smoke/grud
 ```

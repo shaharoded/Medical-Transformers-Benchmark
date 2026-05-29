@@ -1,5 +1,5 @@
 from argparse import Namespace
-from models import TimeSeriesModel
+from utils import TimeSeriesModel
 import torch.nn as nn
 from transformers import BertModel, BertConfig
 import torch

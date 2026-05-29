@@ -1,14 +1,17 @@
 import argparse
 import os
-from utils import Logger, set_all_seeds
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+
+from utils import Logger, count_parameters, set_all_seeds
 import torch
 from dataset import Dataset
-from modeling_strats import Strats
-from modeling_grud import GRUD_TS
+from strats import Strats
+from grud import GRUD_TS
 import numpy as np
 from tqdm import tqdm
 from transformers.optimization import AdamW
-from models import count_parameters
 from evaluator import Evaluator
 
 

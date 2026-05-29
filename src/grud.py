@@ -10,7 +10,7 @@ import torch.jit as jit
 import torch.nn as nn
 import torch.nn.functional as F
 
-from models import TimeSeriesModel
+from utils import TimeSeriesModel
 
 
 class GRUDCell(jit.ScriptModule):

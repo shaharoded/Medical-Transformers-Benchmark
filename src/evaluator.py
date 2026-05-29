@@ -1,6 +1,6 @@
 from tqdm import tqdm
 import torch
-from sklearn.metrics import average_precision_score, roc_auc_score, precision_recall_curve, auc
+from sklearn.metrics import average_precision_score, f1_score, roc_auc_score, precision_recall_curve
 import numpy as np
 import os
 import pandas as pd
@@ -36,20 +36,26 @@ class Evaluator:
             y_true, y_pred = true[:, i], pred[:, i]
             if len(np.unique(y_true))<2:
                 rows.append({'outcome':outcome, 'auroc':np.nan, 'auprc':np.nan,
-                             'minrp':np.nan, 'n_pos':int(y_true.sum()),
+                             'minrp':np.nan, 'f1_0_5':np.nan, 'best_f1':np.nan,
+                             'n_pos':int(y_true.sum()),
                              'n_neg':int((1-y_true).sum())})
                 continue
             precision, recall, thresholds = precision_recall_curve(y_true, y_pred)
+            f1_curve = (2 * precision * recall) / np.maximum(precision + recall, 1e-12)
             rows.append({'outcome':outcome,
                          'auroc':roc_auc_score(y_true, y_pred),
                          'auprc':average_precision_score(y_true, y_pred),
                          'minrp':np.minimum(precision, recall).max(),
+                         'f1_0_5':f1_score(y_true, y_pred >= 0.5),
+                         'best_f1':np.nanmax(f1_curve),
                          'n_pos':int(y_true.sum()),
                          'n_neg':int((1-y_true).sum())})
         table = pd.DataFrame(rows).set_index('outcome')
         result = {'auroc':float(table['auroc'].mean(skipna=True)),
                   'auprc':float(table['auprc'].mean(skipna=True)),
-                  'minrp':float(table['minrp'].mean(skipna=True))}
+                  'minrp':float(table['minrp'].mean(skipna=True)),
+                  'f1_0_5':float(table['f1_0_5'].mean(skipna=True)),
+                  'best_f1':float(table['best_f1'].mean(skipna=True))}
         if split=='test':
             mae_table = self.write_outputs(dataset, eval_ind, true, pred, table)
             if len(mae_table):
