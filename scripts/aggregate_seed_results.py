@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 
 
-METRICS = ["auroc", "auprc", "f1_0_5", "best_f1", "minrp", "mae_hours"]
+METRICS = ["auroc", "auprc", "f1_0_5", "best_f1", "minrp"]
 
 
 def parse_args():
@@ -39,10 +39,6 @@ def load_model_runs(root, model):
     for metrics_path in sorted((root / model).glob("seed_*/test_per_outcome_metrics.csv")):
         seed = metrics_path.parent.name.removeprefix("seed_")
         table = pd.read_csv(metrics_path)
-        mae_path = metrics_path.parent / "test_peak_mae_hours.csv"
-        if mae_path.exists():
-            mae = pd.read_csv(mae_path)
-            table = table.merge(mae[["outcome", "mae_hours"]], on="outcome", how="left")
         table["model"] = model
         table["seed"] = seed
         rows.append(table)

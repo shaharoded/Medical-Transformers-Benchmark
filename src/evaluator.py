@@ -57,9 +57,7 @@ class Evaluator:
                   'f1_0_5':float(table['f1_0_5'].mean(skipna=True)),
                   'best_f1':float(table['best_f1'].mean(skipna=True))}
         if split=='test':
-            mae_table = self.write_outputs(dataset, eval_ind, true, pred, table)
-            if len(mae_table):
-                result['mae_hours'] = float(mae_table['mae_hours'].mean(skipna=True))
+            self.write_outputs(dataset, eval_ind, true, pred, table)
         if train_step is not None:
             self.args.logger.write('Result on '+split+' split at train step '
                               +str(train_step)+': '+str(result))
@@ -90,20 +88,4 @@ class Evaluator:
         risk_df = pd.DataFrame(risk_rows)
         risk_df.to_csv(
             os.path.join(self.args.output_dir, 'test_risk_df.csv'), index=False)
-        mae_rows = []
-        if dataset.first_hours is not None and len(risk_df):
-            peak_time = risk_df.groupby('PatientId')['TimePoint'].min()
-            for i, outcome in enumerate(self.args.outcome_names):
-                errors = []
-                for row_i, patient_id in enumerate(patient_ids):
-                    first_hour = dataset.first_hours[eval_ind[row_i], i]
-                    if np.isfinite(first_hour):
-                        errors.append(abs(float(peak_time.loc[patient_id]) - first_hour))
-                mae_rows.append({'outcome':outcome,
-                                 'mae_hours':float(np.mean(errors)) if errors else np.nan,
-                                 'n_patients':len(errors)})
-        mae_table = pd.DataFrame(mae_rows).set_index('outcome') if mae_rows else pd.DataFrame()
-        if len(mae_table):
-            mae_table.to_csv(os.path.join(self.args.output_dir, 'test_peak_mae_hours.csv'))
-        return mae_table
 

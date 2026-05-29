@@ -13,8 +13,8 @@ first 48 hours of temporal data + static context -> outcome risk over hours 48-3
 ```
 
 They do not generate trajectories. AUROC/AUPRC are the primary comparable
-metrics. The exported MAE file is a simplified peak-risk timing proxy, not a
-true autoregressive onset-time metric.
+metrics. Onset-time MAE is intentionally not reported because these baselines do
+not generate event-time trajectories.
 
 ## Model Context
 
@@ -43,17 +43,15 @@ Full benchmark results are in [RESULTS.md](RESULTS.md).
 
 RunPod full-data test results:
 
-| Model | AUROC | AUPRC | F1@0.5 | Best F1 | minRP | MAE hours |
-|---|---:|---:|---:|---:|---:|---:|
-| STRATS | 0.9026 | 0.6028 | 0.5262 | 0.6010 | 0.5891 | 43.47 |
-| GRU-D | 0.8975 | 0.5855 | 0.5588 | 0.5856 | 0.5773 | 43.47 |
+| Model | AUROC | AUPRC | F1@0.5 | Best F1 | minRP |
+|---|---:|---:|---:|---:|---:|
+| STRATS | 0.9026 | 0.6028 | 0.5262 | 0.6010 | 0.5891 |
+| GRU-D | 0.8975 | 0.5855 | 0.5588 | 0.5856 | 0.5773 |
 
 STRATS is slightly stronger overall on AUROC/AUPRC/minRP in this run. GRU-D is
 competitive and slightly stronger on `DEATH`, `KIDNEY_COMPLICATION`, and
 `HYPEROSMOLALITY` AUROC. `F1@0.5` uses a fixed probability threshold of 0.5;
-`Best F1` is the best threshold sweep value on the test predictions. The
-identical MAE values come from the simplified horizon-risk timing proxy, not
-from a true event-time trajectory prediction.
+`Best F1` is the best threshold sweep value on the test predictions.
 
 ## Authors and Credit
 
@@ -207,7 +205,9 @@ Each model output directory contains:
 - `test_per_outcome_metrics.csv`: AUROC/AUPRC/F1/minRP/support by outcome.
 - `test_predictions.csv`: patient-level labels and predicted probabilities.
 - `test_risk_df.csv`: daily repeated risk rows for compatibility with the evaluation shape.
-- `test_peak_mae_hours.csv`: simplified peak-risk timing proxy.
+
+These baselines do not export MAE. They produce fixed-horizon risk scores, so
+true onset-time MAE is outside their supported output semantics.
 
 Recommended comparison files:
 

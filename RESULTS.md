@@ -51,16 +51,16 @@ Dropped low-support input concepts:
 
 ## Overall Test Results
 
-| Model | AUROC | AUPRC | F1@0.5 | Best F1 | minRP | MAE hours |
-|---|---:|---:|---:|---:|---:|---:|
-| STRATS | 0.902644 | 0.602773 | 0.526159 | 0.601032 | 0.589140 | 43.469718 |
-| GRU-D | 0.897490 | 0.585537 | 0.558765 | 0.585612 | 0.577346 | 43.469718 |
+| Model | AUROC | AUPRC | F1@0.5 | Best F1 | minRP |
+|---|---:|---:|---:|---:|---:|
+| STRATS | 0.902644 | 0.602773 | 0.526159 | 0.601032 | 0.589140 |
+| GRU-D | 0.897490 | 0.585537 | 0.558765 | 0.585612 | 0.577346 |
 
 The primary comparison metrics for these discriminative baselines are
-AUROC/AUPRC/minRP. The MAE file is retained for compatibility with the thesis
-evaluation shape, but these baselines do not generate trajectories or true onset
-times. `F1@0.5` uses a fixed probability threshold of 0.5. `Best F1` is the
-maximum F1 over the precision-recall threshold sweep on the test predictions.
+AUROC/AUPRC/F1/minRP. These baselines do not generate trajectories or true onset
+times, so onset-time MAE is intentionally not reported. `F1@0.5` uses a fixed
+probability threshold of 0.5. `Best F1` is the maximum F1 over the
+precision-recall threshold sweep on the test predictions.
 
 ## Per-Outcome Test Metrics
 
@@ -86,23 +86,6 @@ maximum F1 over the precision-recall threshold sweep on the test predictions.
 | `CARDIO-VASCULAR_DISORDER` | 0.922761 | 0.333856 | 0.365123 | 0.423841 | 0.418182 | 220 | 11,196 |
 | `HYPEROSMOLALITY` | 0.883169 | 0.774603 | 0.696620 | 0.704148 | 0.697970 | 3,301 | 8,115 |
 
-## Per-Outcome MAE Proxy
-
-The same per-outcome MAE proxy was exported for both models:
-
-| Outcome | MAE hours | Positive patients |
-|---|---:|---:|
-| `DEATH` | 102.142628 | 1,101 |
-| `DISGLYCEMIA_Hyperglycemia` | 26.759125 | 2,946 |
-| `DISGLYCEMIA_Hypoglycemia` | 46.826370 | 675 |
-| `KIDNEY_COMPLICATION` | 23.761154 | 1,672 |
-| `CARDIO-VASCULAR_DISORDER` | 34.942273 | 220 |
-| `HYPEROSMOLALITY` | 26.386757 | 3,301 |
-
-Because STRATS and GRU-D emit one horizon-risk score per outcome, this MAE is a
-compatibility proxy. It should not be interpreted as evidence that the models
-learned the same event-time trajectory.
-
 ## Result Files
 
 Each model directory contains:
@@ -112,7 +95,10 @@ Each model directory contains:
 - `test_per_outcome_metrics.csv`: AUROC/AUPRC/F1/minRP/support by outcome.
 - `test_predictions.csv`: patient-level labels and predicted probabilities.
 - `test_risk_df.csv`: repeated daily risk rows for evaluator compatibility.
-- `test_peak_mae_hours.csv`: simplified peak-risk timing proxy.
+
+No MAE file is produced. STRATS and GRU-D are reported as fixed-horizon
+discriminative baselines; missing onset-time MAE should be reported as an
+unsupported output rather than approximated.
 
 ## Commands Used
 
