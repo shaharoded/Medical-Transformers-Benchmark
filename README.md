@@ -35,7 +35,7 @@ irregular ICU data.
 
 Both baselines are discriminative horizon-risk models here. They estimate
 whether each configured outcome occurs during hours 48-336; they do not generate
-a full future trajectory.
+a full future trajectory (decoder style).
 
 ## TL;DR Results
 
@@ -58,8 +58,7 @@ competitive and slightly stronger on `DEATH`, `KIDNEY_COMPLICATION`, and
 Benchmark adaptation, data interface, multi-label outcome evaluation, and README:
 Shahar Oded (`@shaharoded`).
 
-This repository is adapted from the official PyTorch reimplementation of
-STraTS by Sindhu Tipirneni and Chandan K. Reddy:
+This repository (both STraTS and GRU-D) is adapted from the official PyTorch reimplementation by Sindhu Tipirneni and Chandan K. Reddy:
 https://github.com/sindhura97/STraTS
 
 Original paper:
@@ -76,6 +75,8 @@ Original paper:
   publisher={ACM New York, NY}
 }
 ```
+
+Paper link: https://dl.acm.org/doi/pdf/10.1145/3516367
 
 GRU-D reference:
 
@@ -111,12 +112,59 @@ data/mimic-iv-input-data.csv
 data/context_data.csv
 ```
 
+## Data Shape
+
+Raw temporal input is expected as one row per patient event or measurement:
+
+| Column | Meaning |
+|---|---|
+| `PatientId` | Admission/patient identifier used as the time-series id. |
+| `ConceptName` | Event, measurement, medication, or terminal concept name. |
+| `StartDateTime` | Event timestamp. Times are anchored to each patient's `ADMISSION`. |
+| `EndDateTime` | Event end timestamp, retained in raw data but not used by the benchmark loader. |
+| `Value` | Numeric value, boolean value, or categorical value. |
+
+Raw static context is expected as one row per patient:
+
+| Column | Meaning |
+|---|---|
+| `PatientId` | Same identifier as the temporal file. |
+| Other columns | Static context features, currently age, gender, admission type, and comorbidity flags. |
+
+Preprocessing writes `data/processed/user_mimic_iv.pkl` as:
+
+```python
+[data, labels, train_ids, valid_ids, test_ids, metadata]
+```
+
+`data` is a long table consumed by both models:
+
+| Column | Meaning |
+|---|---|
+| `ts_id` | Patient/admission id. |
+| `minute` | Minutes since admission. Temporal inputs are restricted to the first 48 hours; static context is placed at minute `0.0`. |
+| `variable` | Input concept or static feature name. Configured outcome concepts and terminal concepts are excluded from inputs. |
+| `value` | Numeric input value. Categorical temporal values are expanded to indicator-style variables with value `1.0`. |
+
+`labels` contains one row per patient:
+
+| Column | Meaning |
+|---|---|
+| `ts_id` | Patient/admission id. |
+| outcome columns | Binary labels for whether the outcome occurs during hours 48-336. |
+| `{outcome}__first_hour` | First observed outcome hour in the prediction window, retained for traceability only; onset-time MAE is not reported for these baselines. |
+
+The dataset loader converts this processed shape into model-specific tensors:
+
+- STRATS: sparse padded triplets `values`, `times`, `varis`, plus `obs_mask`, `demo`, and multi-label `labels`.
+- GRU-D: padded `x_t`, `m_t`, `delta_t`, `seq_len`, `demo`, and multi-label `labels`.
+
 ## Preprocess
 
 Build the processed benchmark pickle:
 
 ```powershell
-& .\.venv\Scripts\python.exe scripts\preprocess_user_mimic_iv.py
+& .\.venv\Scripts\python.exe scripts\preprocess_mimic_iv.py
 ```
 
 This writes:
@@ -138,6 +186,8 @@ Dysglycemia outcomes are synthesized during preprocessing:
 
 - Hypoglycemia: one glucose `<= 54`, or the second and later glucose values `<= 70`.
 - Hyperglycemia: one glucose `>= 250`, or the second and later glucose values `>= 180`.
+
+Full data process pipeline (from mimic iv to events dataset): https://github.com/shaharoded/MIMIC-IV-ETL
 
 Low-support input concepts and configured outcomes are filtered using
 `CONCEPT_SUPPORT_THRESHOLD` and `OUTCOME_SUPPORT_THRESHOLD` in `src/config.py`.
@@ -205,9 +255,6 @@ Each model output directory contains:
 - `test_per_outcome_metrics.csv`: AUROC/AUPRC/F1/minRP/support by outcome.
 - `test_predictions.csv`: patient-level labels and predicted probabilities.
 - `test_risk_df.csv`: daily repeated risk rows for compatibility with the evaluation shape.
-
-These baselines do not export MAE. They produce fixed-horizon risk scores, so
-true onset-time MAE is outside their supported output semantics.
 
 Recommended comparison files:
 

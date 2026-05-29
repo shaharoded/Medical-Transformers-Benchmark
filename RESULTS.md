@@ -105,7 +105,7 @@ unsupported output rather than approximated.
 Preprocess:
 
 ```bash
-.venv/bin/python scripts/preprocess_user_mimic_iv.py
+.venv/bin/python scripts/preprocess_mimic_iv.py
 ```
 
 STRATS:
