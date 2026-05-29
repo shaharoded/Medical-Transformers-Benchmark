@@ -16,6 +16,27 @@ They do not generate trajectories. AUROC/AUPRC are the primary comparable
 metrics. The exported MAE file is a simplified peak-risk timing proxy, not a
 true autoregressive onset-time metric.
 
+## Model Context
+
+`strats` is a transformer baseline for sparse and irregularly sampled clinical
+time series. Instead of resampling the first 48 hours into a dense grid, each
+observation is represented through its value, timestamp, and variable identity.
+The transformer then attends over the observed event set, and this benchmark
+combines the temporal embedding with static context before a multi-label risk
+head.
+
+`grud` is a recurrent baseline designed for multivariate time series where
+missingness is informative. The sparse trajectory is converted into values,
+observation masks, and per-variable time deltas. GRU-D uses learned decay terms
+so stale measurements and hidden states can decay toward defaults. Che et al.
+describe GRU-D as using "`masking and time interval`" representations of
+missing patterns, which is exactly why it is a relevant clinical benchmark for
+irregular ICU data.
+
+Both baselines are discriminative horizon-risk models here. They estimate
+whether each configured outcome occurs during hours 48-336; they do not generate
+a full future trajectory.
+
 ## TL;DR Results
 
 Full benchmark results are in [RESULTS.md](RESULTS.md).
@@ -57,6 +78,22 @@ Original paper:
   publisher={ACM New York, NY}
 }
 ```
+
+GRU-D reference:
+
+```bibtex
+@article{che2018recurrent,
+  title={Recurrent Neural Networks for Multivariate Time Series with Missing Values},
+  author={Che, Zhengping and Purushotham, Sanjay and Cho, Kyunghyun and Sontag, David and Liu, Yan},
+  journal={Scientific Reports},
+  volume={8},
+  number={1},
+  pages={6085},
+  year={2018}
+}
+```
+
+Paper link: https://www.nature.com/articles/s41598-018-24271-9
 
 ## Setup
 

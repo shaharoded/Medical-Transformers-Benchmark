@@ -1,7 +1,24 @@
-# References:
-# https://arxiv.org/pdf/1606.01865.pdf
-# https://pytorch.org/blog/optimizing-cuda-rnn-with-torchscript/
-# https://github.com/PeterChe1990/GRU-D/blob/master/nn_utils/grud_layers.py
+"""GRU-D baseline for irregular clinical time series.
+
+GRU-D extends a standard GRU with explicit missingness handling. At each time
+step the model receives observed values, binary observation masks, and elapsed
+time since each variable was last observed. Learned decay terms pull stale
+measurements and hidden states toward empirical defaults, which lets the model
+use both measured values and missingness patterns as predictive signals.
+
+In this benchmark, sparse temporal events are converted to fixed-length
+value/mask/delta tensors over the first 48 hours, then the final recurrent
+state is combined with static context to predict multi-label 12-day outcome
+risk.
+
+References:
+- Che et al., "Recurrent Neural Networks for Multivariate Time Series with
+  Missing Values" (Scientific Reports, 2018): https://www.nature.com/articles/s41598-018-24271-9
+- PyTorch TorchScript RNN optimization note:
+  https://pytorch.org/blog/optimizing-cuda-rnn-with-torchscript/
+- GRU-D implementation reference:
+  https://github.com/PeterChe1990/GRU-D/blob/master/nn_utils/grud_layers.py
+"""
 
 from typing import List, Tuple
 

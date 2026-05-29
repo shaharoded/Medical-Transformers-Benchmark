@@ -1,3 +1,22 @@
+"""STraTS-style transformer baseline for sparse irregular clinical events.
+
+STraTS represents each observation as a triplet containing measurement value,
+timestamp, and variable identity. Continuous value/time embeddings and variable
+embeddings are fused, then a transformer encoder models interactions across the
+set of irregular observations rather than forcing the trajectory onto a dense
+regular grid.
+
+In this benchmark, outcome concepts are excluded from the input event stream to
+avoid direct label leakage. The encoded first-48-hour temporal representation is
+combined with static context and trained with a multi-label binary head for
+12-day horizon risk prediction.
+
+Reference:
+- Tipirneni and Reddy, "Self-supervised transformer for sparse and irregularly
+  sampled multivariate clinical time-series" (TKDD, 2022):
+  https://github.com/sindhura97/STraTS
+"""
+
 from argparse import Namespace
 from utils import TimeSeriesModel
 import torch.nn as nn
