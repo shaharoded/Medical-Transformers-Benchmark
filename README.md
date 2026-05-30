@@ -41,12 +41,12 @@ a full future trajectory (decoder style).
 
 Full benchmark results are in [RESULTS.md](RESULTS.md).
 
-RunPod full-data test results:
+RunPod full-data test results, reported as mean over paired seeds `2023-2025`:
 
 | Model | AUROC | AUPRC | F1@0.5 | Best F1 | minRP |
 |---|---:|---:|---:|---:|---:|
-| STRATS | 0.9026 | 0.6028 | 0.5262 | 0.6010 | 0.5891 |
-| GRU-D | 0.8975 | 0.5855 | 0.5588 | 0.5856 | 0.5773 |
+| STRATS | 0.9030 | 0.6030 | 0.5470 | 0.6017 | 0.5896 |
+| GRU-D | 0.8983 | 0.5868 | 0.5572 | 0.5852 | 0.5759 |
 
 STRATS is slightly stronger overall on AUROC/AUPRC/minRP in this run. GRU-D is
 competitive and slightly stronger on `DEATH`, `KIDNEY_COMPLICATION`, and
@@ -216,7 +216,7 @@ converts sparse events into value/mask/delta tensors internally.
 
 ## Multi-Seed Runs
 
-For confidence intervals, run both models across five nominal seeds:
+For confidence intervals, run both models across three paired seeds:
 
 ```bash
 bash scripts/run_multiseed.sh
@@ -225,7 +225,7 @@ bash scripts/run_multiseed.sh
 Defaults:
 
 ```text
-SEEDS="2023 2024 2025 2026 2027"
+SEEDS="2023 2024 2025"
 MODELS="strats grud"
 ROOT="outputs/user_mimic_iv/multiseed"
 ```

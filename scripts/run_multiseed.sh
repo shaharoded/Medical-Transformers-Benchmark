@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SEEDS="${SEEDS:-2023 2024 2025 2026 2027}"
+SEEDS="${SEEDS:-2023 2024 2025}"
 MODELS="${MODELS:-strats grud}"
 ROOT="${ROOT:-outputs/user_mimic_iv/multiseed}"
 DATASET="${DATASET:-user_mimic_iv}"

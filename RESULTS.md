@@ -53,14 +53,15 @@ Dropped low-support input concepts:
 
 | Model | AUROC | AUPRC | F1@0.5 | Best F1 | minRP |
 |---|---:|---:|---:|---:|---:|
-| STRATS | 0.902644 | 0.602773 | 0.526159 | 0.601032 | 0.589140 |
-| GRU-D | 0.897490 | 0.585537 | 0.558765 | 0.585612 | 0.577346 |
+| STRATS | 0.903010 | 0.602967 | 0.547001 | 0.601667 | 0.589573 |
+| GRU-D | 0.898261 | 0.586806 | 0.557213 | 0.585229 | 0.575922 |
 
 The primary comparison metrics for these discriminative baselines are
 AUROC/AUPRC/F1/minRP. These baselines do not generate trajectories or true onset
 times, so onset-time MAE is intentionally not reported. `F1@0.5` uses a fixed
 probability threshold of 0.5. `Best F1` is the maximum F1 over the
-precision-recall threshold sweep on the test predictions.
+precision-recall threshold sweep on the test predictions. Values above are
+means over paired seeds `2023-2025`.
 
 ## Per-Outcome Test Metrics
 
@@ -68,23 +69,23 @@ precision-recall threshold sweep on the test predictions.
 
 | Outcome | AUROC | AUPRC | F1@0.5 | Best F1 | minRP | Positives | Negatives |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `DEATH` | 0.894743 | 0.534561 | 0.467157 | 0.544124 | 0.527652 | 1,101 | 10,315 |
-| `DISGLYCEMIA_Hyperglycemia` | 0.898491 | 0.776084 | 0.698201 | 0.712684 | 0.704785 | 2,946 | 8,470 |
-| `DISGLYCEMIA_Hypoglycemia` | 0.846296 | 0.295564 | 0.311140 | 0.371171 | 0.347769 | 675 | 10,741 |
-| `KIDNEY_COMPLICATION` | 0.965344 | 0.870695 | 0.698291 | 0.824324 | 0.820574 | 1,672 | 9,744 |
-| `CARDIO-VASCULAR_DISORDER` | 0.936205 | 0.375760 | 0.299732 | 0.460967 | 0.441964 | 220 | 11,196 |
-| `HYPEROSMOLALITY` | 0.874785 | 0.763974 | 0.682433 | 0.692923 | 0.692098 | 3,301 | 8,115 |
+| `DEATH` | 0.895034 | 0.533791 | 0.506082 | 0.538716 | 0.525994 | 1,101 | 10,315 |
+| `DISGLYCEMIA_Hyperglycemia` | 0.898643 | 0.776720 | 0.706631 | 0.712981 | 0.708565 | 2,946 | 8,470 |
+| `DISGLYCEMIA_Hypoglycemia` | 0.850503 | 0.297016 | 0.341119 | 0.378081 | 0.348828 | 675 | 10,741 |
+| `KIDNEY_COMPLICATION` | 0.966257 | 0.869701 | 0.741919 | 0.826582 | 0.822474 | 1,672 | 9,744 |
+| `CARDIO-VASCULAR_DISORDER` | 0.931745 | 0.377600 | 0.301284 | 0.458233 | 0.439746 | 220 | 11,196 |
+| `HYPEROSMOLALITY` | 0.875878 | 0.762972 | 0.684968 | 0.695411 | 0.691834 | 3,301 | 8,115 |
 
 ### GRU-D
 
 | Outcome | AUROC | AUPRC | F1@0.5 | Best F1 | minRP | Positives | Negatives |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| `DEATH` | 0.903303 | 0.534434 | 0.506457 | 0.541157 | 0.529519 | 1,101 | 10,315 |
-| `DISGLYCEMIA_Hyperglycemia` | 0.891190 | 0.757936 | 0.694669 | 0.700592 | 0.694162 | 2,946 | 8,470 |
-| `DISGLYCEMIA_Hypoglycemia` | 0.818328 | 0.240356 | 0.312931 | 0.324713 | 0.305355 | 675 | 10,741 |
-| `KIDNEY_COMPLICATION` | 0.966186 | 0.872039 | 0.776790 | 0.819219 | 0.818888 | 1,672 | 9,744 |
-| `CARDIO-VASCULAR_DISORDER` | 0.922761 | 0.333856 | 0.365123 | 0.423841 | 0.418182 | 220 | 11,196 |
-| `HYPEROSMOLALITY` | 0.883169 | 0.774603 | 0.696620 | 0.704148 | 0.697970 | 3,301 | 8,115 |
+| `DEATH` | 0.900886 | 0.525798 | 0.498121 | 0.533675 | 0.528127 | 1,101 | 10,315 |
+| `DISGLYCEMIA_Hyperglycemia` | 0.894190 | 0.762703 | 0.699384 | 0.707077 | 0.702828 | 2,946 | 8,470 |
+| `DISGLYCEMIA_Hypoglycemia` | 0.819213 | 0.243249 | 0.302996 | 0.321625 | 0.298822 | 675 | 10,741 |
+| `KIDNEY_COMPLICATION` | 0.966798 | 0.875662 | 0.778027 | 0.820935 | 0.819015 | 1,672 | 9,744 |
+| `CARDIO-VASCULAR_DISORDER` | 0.925552 | 0.338806 | 0.368166 | 0.423876 | 0.405538 | 220 | 11,196 |
+| `HYPEROSMOLALITY` | 0.882924 | 0.774620 | 0.696583 | 0.704189 | 0.701202 | 3,301 | 8,115 |
 
 ## Result Files
 
