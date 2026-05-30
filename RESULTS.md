@@ -51,17 +51,20 @@ Dropped low-support input concepts:
 
 ## Overall Test Results
 
-| Model | AUROC | AUPRC | F1@0.5 | Best F1 | minRP |
-|---|---:|---:|---:|---:|---:|
-| STRATS | 0.903010 | 0.602967 | 0.547001 | 0.601667 | 0.589573 |
-| GRU-D | 0.898261 | 0.586806 | 0.557213 | 0.585229 | 0.575922 |
+| Model | Average | AUROC | AUPRC | F1@0.5 | Best F1 | minRP |
+|---|---|---:|---:|---:|---:|---:|
+| STRATS | Macro | 0.903010 | 0.602967 | 0.547001 | 0.601667 | 0.589573 |
+| STRATS | Weighted | 0.899522 | 0.719333 | 0.649222 | 0.678485 | 0.671475 |
+| GRU-D | Macro | 0.898261 | 0.586806 | 0.557213 | 0.585229 | 0.575922 |
+| GRU-D | Weighted | 0.899019 | 0.714643 | 0.655029 | 0.673536 | 0.668379 |
 
 The primary comparison metrics for these discriminative baselines are
 AUROC/AUPRC/F1/minRP. These baselines do not generate trajectories or true onset
 times, so onset-time MAE is intentionally not reported. `F1@0.5` uses a fixed
 probability threshold of 0.5. `Best F1` is the maximum F1 over the
-precision-recall threshold sweep on the test predictions. Values above are
-means over paired seeds `2023-2025`.
+precision-recall threshold sweep on the test predictions. Macro is an
+unweighted mean across outcomes. Weighted uses each outcome's positive support
+(`n_pos`) as the weight. Values above are means over paired seeds `2023-2025`.
 
 ## Per-Outcome Test Metrics
 

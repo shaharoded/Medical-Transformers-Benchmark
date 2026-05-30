@@ -41,12 +41,16 @@ a full future trajectory (decoder style).
 
 Full benchmark results are in [RESULTS.md](RESULTS.md).
 
-RunPod full-data test results, reported as mean over paired seeds `2023-2025`:
+RunPod full-data test results, reported as mean over paired seeds `2023-2025`.
+Macro is an unweighted mean across outcomes; weighted uses each outcome's
+positive support (`n_pos`) as the weight:
 
-| Model | AUROC | AUPRC | F1@0.5 | Best F1 | minRP |
-|---|---:|---:|---:|---:|---:|
-| STRATS | 0.9030 | 0.6030 | 0.5470 | 0.6017 | 0.5896 |
-| GRU-D | 0.8983 | 0.5868 | 0.5572 | 0.5852 | 0.5759 |
+| Model | Average | AUROC | AUPRC | F1@0.5 | Best F1 | minRP |
+|---|---|---:|---:|---:|---:|---:|
+| STRATS | Macro | 0.9030 | 0.6030 | 0.5470 | 0.6017 | 0.5896 |
+| STRATS | Weighted | 0.8995 | 0.7193 | 0.6492 | 0.6785 | 0.6715 |
+| GRU-D | Macro | 0.8983 | 0.5868 | 0.5572 | 0.5852 | 0.5759 |
+| GRU-D | Weighted | 0.8990 | 0.7146 | 0.6550 | 0.6735 | 0.6684 |
 
 STRATS is slightly stronger overall on AUROC/AUPRC/minRP in this run. GRU-D is
 competitive and slightly stronger on `DEATH`, `KIDNEY_COMPLICATION`, and
@@ -235,7 +239,16 @@ so interrupted runs can be restarted. When all runs finish, it writes:
 
 ```text
 outputs/user_mimic_iv/multiseed/summary.csv
+outputs/user_mimic_iv/multiseed/summary_per_outcome_runs.csv
+outputs/user_mimic_iv/multiseed/summary_overall_by_seed.csv
 ```
+
+The summary contains per-outcome seed statistics plus two overall rows:
+`MACRO_AVERAGE` is the unweighted mean across outcomes, and
+`WEIGHTED_AVERAGE` is weighted by each outcome's positive support (`n_pos`).
+The companion `summary_per_outcome_runs.csv` keeps every raw seed/outcome row
+for plotting, and `summary_overall_by_seed.csv` keeps the raw macro and weighted
+overall values per model seed.
 
 To aggregate manually:
 
