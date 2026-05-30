@@ -41,16 +41,16 @@ a full future trajectory (decoder style).
 
 Full benchmark results are in [RESULTS.md](RESULTS.md).
 
-RunPod full-data test results, reported as mean over paired seeds `2023-2025`.
-Macro is an unweighted mean across outcomes; weighted uses each outcome's
-positive support (`n_pos`) as the weight:
+RunPod full-data test results, reported as mean +/- 95% CI over paired seeds
+`2023-2025`. Macro is an unweighted mean across outcomes; weighted uses each
+outcome's positive support (`n_pos`) as the weight:
 
 | Model | Average | AUROC | AUPRC | F1@0.5 | Best F1 | minRP |
 |---|---|---:|---:|---:|---:|---:|
-| STRATS | Macro | 0.9030 | 0.6030 | 0.5470 | 0.6017 | 0.5896 |
-| STRATS | Weighted | 0.8995 | 0.7193 | 0.6492 | 0.6785 | 0.6715 |
-| GRU-D | Macro | 0.8983 | 0.5868 | 0.5572 | 0.5852 | 0.5759 |
-| GRU-D | Weighted | 0.8990 | 0.7146 | 0.6550 | 0.6735 | 0.6684 |
+| STRATS | Macro | 0.9030 +/- 0.0020 | 0.6030 +/- 0.0015 | 0.5470 +/- 0.0209 | 0.6017 +/- 0.0065 | 0.5896 +/- 0.0058 |
+| STRATS | Weighted | 0.8995 +/- 0.0013 | 0.7193 +/- 0.0007 | 0.6492 +/- 0.0173 | 0.6785 +/- 0.0019 | 0.6715 +/- 0.0015 |
+| GRU-D | Macro | 0.8983 +/- 0.0010 | 0.5868 +/- 0.0020 | 0.5572 +/- 0.0015 | 0.5852 +/- 0.0046 | 0.5759 +/- 0.0029 |
+| GRU-D | Weighted | 0.8990 +/- 0.0008 | 0.7146 +/- 0.0014 | 0.6550 +/- 0.0002 | 0.6735 +/- 0.0030 | 0.6684 +/- 0.0030 |
 
 STRATS is slightly stronger overall on AUROC/AUPRC/minRP in this run. GRU-D is
 competitive and slightly stronger on `DEATH`, `KIDNEY_COMPLICATION`, and
@@ -274,23 +274,4 @@ Recommended comparison files:
 ```text
 outputs/user_mimic_iv/strats/test_per_outcome_metrics.csv
 outputs/user_mimic_iv/grud/test_per_outcome_metrics.csv
-```
-
-## Smoke Tests
-
-These small CPU commands verify that preprocessing, model construction, batching,
-loss computation, and the training loop work. They are not meaningful model runs.
-They intentionally skip validation, so use the full training commands above to
-produce result CSVs.
-
-STRATS smoke test:
-
-```powershell
-& .\.venv\Scripts\python.exe main.py --dataset user_mimic_iv --model_type strats --run 1o1 --train_frac 0.01 --device cpu --max_epochs 1 --train_batch_size 64 --eval_batch_size 128 --validate_after 999999 --max_obs 64 --hid_dim 16 --num_layers 1 --num_heads 2 --output_dir outputs/smoke/strats
-```
-
-GRU-D smoke test:
-
-```powershell
-& .\.venv\Scripts\python.exe main.py --dataset user_mimic_iv --model_type grud --run 1o1 --train_frac 0.01 --device cpu --max_epochs 1 --train_batch_size 64 --eval_batch_size 128 --validate_after 999999 --max_timesteps 64 --hid_dim 16 --output_dir outputs/smoke/grud
 ```
