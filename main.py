@@ -50,6 +50,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--validate_after', type=int, default=-1)
     parser.add_argument('--validate_every', type=int, default=None)
     parser.add_argument('--device', type=str, default=None)
+    # LoS regression head — relative weight of the masked-MSE term against
+    # the multi-label BCE term in the combined loss. Set to 0 to disable.
+    parser.add_argument('--los_loss_weight', type=float, default=1.0)
+    # Test-set 95 % CIs come from an in-evaluator 2,000-resample patient-level
+    # bootstrap (matches the INTERVenE protocol). Set --bootstrap_resamples 0
+    # to skip the CI block and produce single-point estimates only.
+    parser.add_argument('--bootstrap_resamples', type=int, default=2000)
+    parser.add_argument('--bootstrap_seed',      type=int, default=42)
 
     args = parser.parse_args()
     return args

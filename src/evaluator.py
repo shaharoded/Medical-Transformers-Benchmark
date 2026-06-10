@@ -5,9 +5,130 @@ import numpy as np
 import os
 import pandas as pd
 
+
+def _safe_auc_pair(y_true, y_pred):
+    """AUROC/AUPRC; returns (nan, nan) when only one class is present."""
+    if len(np.unique(y_true)) < 2:
+        return np.nan, np.nan
+    return (
+        roc_auc_score(y_true, y_pred),
+        average_precision_score(y_true, y_pred),
+    )
+
+
+def _max_f1_pair(y_true, y_pred):
+    """max-F1 from sweeping the PR curve plus F1 at the fixed 0.5 threshold."""
+    if len(np.unique(y_true)) < 2:
+        return np.nan, np.nan, np.nan
+    precision, recall, _ = precision_recall_curve(y_true, y_pred)
+    f1_curve = (2 * precision * recall) / np.maximum(precision + recall, 1e-12)
+    return (
+        np.nanmax(f1_curve),
+        float(f1_score(y_true, y_pred >= 0.5)),
+        np.minimum(precision, recall).max(),
+    )
+
+
+def _bootstrap_test_metrics(true, pred, outcome_names,
+                            los_pred_hours, los_true_hours, los_mask,
+                            n_resamples, rng_seed):
+    """
+    Purpose: 2,000-resample patient-level bootstrap on the held-out test set
+             so per-outcome AUROC / AUPRC / max-F1 / F1@0.5 / minRP and the
+             length-of-stay MAE (denormalised, RELEASE-discharged subset)
+             each carry a 95 % CI from a single training run — matching the
+             protocol used by INTERVenE-Ar / INTERVenE-Enc.
+    Method:  Sample patient indices with replacement; recompute each metric
+             on every resample; report mean and the [2.5 %, 97.5 %] quantiles.
+
+    Returns:
+        dict with per-outcome arrays (point estimates + CI bounds) and an
+        overall section keyed by 'support_weighted' / 'macro' / 'los'.
+    """
+    rng = np.random.default_rng(rng_seed)
+    n_patients = true.shape[0]
+    n_outcomes = len(outcome_names)
+    metric_names = ('auroc', 'auprc', 'best_f1', 'f1_0_5', 'minrp')
+
+    # Per-outcome accumulators (one row per resample).
+    samples = {m: np.full((n_resamples, n_outcomes), np.nan) for m in metric_names}
+    # Per-outcome positive support per resample (needed for the support-
+    # weighted overall aggregate inside each bootstrap iteration).
+    n_pos_samples = np.zeros((n_resamples, n_outcomes), dtype=float)
+    # Length-of-stay MAE per resample (RELEASE-discharged subset only).
+    los_samples = np.full(n_resamples, np.nan)
+
+    for b in range(n_resamples):
+        idx = rng.integers(0, n_patients, size=n_patients)
+        for i in range(n_outcomes):
+            y_true = true[idx, i]
+            y_pred = pred[idx, i]
+            samples['auroc'][b, i], samples['auprc'][b, i] = _safe_auc_pair(y_true, y_pred)
+            max_f1, f1_05, minrp = _max_f1_pair(y_true, y_pred)
+            samples['best_f1'][b, i] = max_f1
+            samples['f1_0_5'][b, i]  = f1_05
+            samples['minrp'][b, i]   = minrp
+            n_pos_samples[b, i] = y_true.sum()
+        # LoS MAE on the RELEASE-discharged subset of the resample.
+        mask_b = los_mask[idx]
+        if mask_b.any():
+            los_samples[b] = float(
+                np.abs(los_pred_hours[idx][mask_b] - los_true_hours[idx][mask_b]).mean()
+            )
+
+    def _ci_block(arr_2d):
+        """Return point estimate (mean across resamples) + 95 % CI per outcome."""
+        return {
+            'mean':  np.nanmean(arr_2d, axis=0),
+            'lo':    np.nanpercentile(arr_2d, 2.5,  axis=0),
+            'hi':    np.nanpercentile(arr_2d, 97.5, axis=0),
+        }
+
+    per_outcome = {m: _ci_block(samples[m]) for m in metric_names}
+
+    # Support-weighted and macro aggregates per bootstrap iteration, then CI.
+    overall = {}
+    for m in metric_names:
+        vals = samples[m]  # [n_resamples, n_outcomes]
+        # Support weights per resample, normalised; rows with all-zero support
+        # (no positives at all) fall back to a uniform mean so the row is not
+        # discarded.
+        weights = n_pos_samples / np.maximum(n_pos_samples.sum(axis=1, keepdims=True), 1)
+        weights = np.where(weights.sum(axis=1, keepdims=True) > 0, weights, 1.0 / n_outcomes)
+        weighted = np.nansum(vals * weights, axis=1) / np.nansum(weights * ~np.isnan(vals), axis=1).clip(min=1e-12)
+        macro = np.nanmean(vals, axis=1)
+        overall[m] = {
+            'support_weighted': {
+                'mean': float(np.nanmean(weighted)),
+                'lo':   float(np.nanpercentile(weighted, 2.5)),
+                'hi':   float(np.nanpercentile(weighted, 97.5)),
+            },
+            'macro': {
+                'mean': float(np.nanmean(macro)),
+                'lo':   float(np.nanpercentile(macro, 2.5)),
+                'hi':   float(np.nanpercentile(macro, 97.5)),
+            },
+        }
+
+    los_summary = {
+        'mean': float(np.nanmean(los_samples)),
+        'lo':   float(np.nanpercentile(los_samples, 2.5)),
+        'hi':   float(np.nanpercentile(los_samples, 97.5)),
+    }
+
+    return {
+        'per_outcome': per_outcome,
+        'overall':     overall,
+        'los':         los_summary,
+        'n_resamples': n_resamples,
+    }
+
+
 class Evaluator:
     def __init__(self, args):
         self.args = args
+        self.bootstrap_resamples = int(getattr(args, 'bootstrap_resamples', 2000))
+        self.bootstrap_seed      = int(getattr(args, 'bootstrap_seed', 42))
 
     def evaluate(self, model, dataset, split, train_step):
         self.args.logger.write('\nEvaluating on split = '+split)
@@ -23,7 +144,11 @@ class Evaluator:
                                            start+self.args.eval_batch_size)]
             batch = dataset.get_batch(batch_ind)
             true.append(batch['labels'])
-            del batch['labels']
+            # In eval mode we do not need supervision tensors; drop the
+            # binary labels and the LoS regression target/mask before
+            # moving inputs to the GPU.
+            for k in ('labels', 'los_target_norm', 'los_mask'):
+                batch.pop(k, None)
             batch = {k:v.to(self.args.device) for k,v in batch.items()}
             with torch.no_grad():
                 pred.append(model(**batch).cpu())
@@ -31,6 +156,21 @@ class Evaluator:
         if true.ndim==1:
             true = true.reshape(-1, 1)
             pred = pred.reshape(-1, 1)
+        # Last column of the model output is the z-scored LoS regression.
+        # Denormalise to hours and compute MAE on RELEASE-discharged patients
+        # only (mask = 1). Strip that column off `pred` before the per-outcome
+        # binary metrics loop so its shape lines up with `true` again.
+        los_pred_norm = pred[:, -1]
+        pred = pred[:, :-1]
+        los_mean = getattr(self.args, 'los_mean', 0.0)
+        los_std  = getattr(self.args, 'los_std',  1.0) or 1.0
+        los_pred_hours = los_pred_norm * los_std + los_mean
+        los_true_hours = dataset.los_hours_raw[eval_ind]
+        los_mask = dataset.los_mask[eval_ind].astype(bool)
+        if los_mask.any():
+            los_mae_hours = float(np.abs(los_pred_hours[los_mask] - los_true_hours[los_mask]).mean())
+        else:
+            los_mae_hours = float('nan')
         rows = []
         for i, outcome in enumerate(self.args.outcome_names):
             y_true, y_pred = true[:, i], pred[:, i]
@@ -55,16 +195,49 @@ class Evaluator:
                   'auprc':float(table['auprc'].mean(skipna=True)),
                   'minrp':float(table['minrp'].mean(skipna=True)),
                   'f1_0_5':float(table['f1_0_5'].mean(skipna=True)),
-                  'best_f1':float(table['best_f1'].mean(skipna=True))}
+                  'best_f1':float(table['best_f1'].mean(skipna=True)),
+                  'los_mae_hours':los_mae_hours,
+                  'los_n_valid':int(los_mask.sum())}
+
+        # Headline confidence intervals come from a 2,000-resample patient-
+        # level bootstrap on the held-out test set, matching the INTERVenE
+        # protocol so the cross-method comparison stays apples-to-apples.
+        # Val / eval_train stay as single point estimates (used only for the
+        # early-stop selector, which is invariant to CIs).
+        if split == 'test' and self.bootstrap_resamples > 0:
+            boot = _bootstrap_test_metrics(
+                true, pred, self.args.outcome_names,
+                los_pred_hours, los_true_hours, los_mask,
+                n_resamples=self.bootstrap_resamples,
+                rng_seed=self.bootstrap_seed,
+            )
+            # Add per-outcome CI columns to the printed table.
+            for metric in ('auroc', 'auprc', 'best_f1', 'f1_0_5', 'minrp'):
+                table[metric + '_lo'] = boot['per_outcome'][metric]['lo']
+                table[metric + '_hi'] = boot['per_outcome'][metric]['hi']
+            # Surface the support-weighted and macro CI bands in the summary.
+            for metric in ('auroc', 'auprc', 'best_f1', 'f1_0_5', 'minrp'):
+                result[metric + '_w_mean'] = boot['overall'][metric]['support_weighted']['mean']
+                result[metric + '_w_lo']   = boot['overall'][metric]['support_weighted']['lo']
+                result[metric + '_w_hi']   = boot['overall'][metric]['support_weighted']['hi']
+                result[metric + '_macro_lo'] = boot['overall'][metric]['macro']['lo']
+                result[metric + '_macro_hi'] = boot['overall'][metric]['macro']['hi']
+            result['los_mae_hours_lo'] = boot['los']['lo']
+            result['los_mae_hours_hi'] = boot['los']['hi']
+            result['bootstrap_resamples'] = boot['n_resamples']
         if split=='test':
-            self.write_outputs(dataset, eval_ind, true, pred, table)
+            self.write_outputs(dataset, eval_ind, true, pred, table,
+                               los_pred_hours=los_pred_hours,
+                               los_true_hours=los_true_hours,
+                               los_mask=los_mask)
         if train_step is not None:
             self.args.logger.write('Result on '+split+' split at train step '
                               +str(train_step)+': '+str(result))
             self.args.logger.write('\nPer-outcome '+split+' results:\n'+str(table))
         return result
 
-    def write_outputs(self, dataset, eval_ind, true, pred, table):
+    def write_outputs(self, dataset, eval_ind, true, pred, table,
+                      los_pred_hours=None, los_true_hours=None, los_mask=None):
         table.to_csv(os.path.join(self.args.output_dir, 'test_per_outcome_metrics.csv'))
         patient_ids = [dataset.ind_to_ts_id[i] for i in eval_ind]
         pred_df = pd.DataFrame({'PatientId':patient_ids})
@@ -73,6 +246,10 @@ class Evaluator:
             pred_df['P_'+outcome] = pred[:, i]
             if dataset.first_hours is not None:
                 pred_df['first_hour_'+outcome] = dataset.first_hours[eval_ind, i]
+        if los_pred_hours is not None:
+            pred_df['pred_length_of_stay_hours'] = los_pred_hours
+            pred_df['y_length_of_stay_hours']    = los_true_hours
+            pred_df['has_release']               = los_mask.astype(int)
         pred_df.to_csv(os.path.join(self.args.output_dir, 'test_predictions.csv'), index=False)
 
         risk_rows = []

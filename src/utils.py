@@ -91,21 +91,52 @@ class TimeSeriesModel(nn.Module):
             ts_demo_emb_size = args.hid_dim+args.D
         else:
             ts_demo_emb_size = args.hid_dim*2
+        # The prediction head emits a single vector of length (num_labels + 1):
+        # the first num_labels logits are the per-outcome binary risk scores
+        # (BCE-with-logits), and the last scalar is the z-scored length-of-stay
+        # regression (MSE against the normalised target during training,
+        # denormalised in the evaluator to report MAE in hours).
+        head_out_dim = args.num_labels + 1
         self.finetune = args.load_ckpt_path is not None
         if self.finetune:
             self.forecast_head = nn.Linear(ts_demo_emb_size, args.V)
-            self.binary_head = nn.Linear(args.V,args.num_labels)
-            self.register_buffer('pos_class_weight', torch.as_tensor(args.pos_class_weight).float())
+            self.binary_head = nn.Linear(args.V, head_out_dim)
         else:
-            self.binary_head = nn.Linear(ts_demo_emb_size,args.num_labels)
-            self.register_buffer('pos_class_weight', torch.as_tensor(args.pos_class_weight).float())
+            self.binary_head = nn.Linear(ts_demo_emb_size, head_out_dim)
+        self.register_buffer('pos_class_weight', torch.as_tensor(args.pos_class_weight).float())
+        self.los_loss_weight = float(getattr(args, 'los_loss_weight', 1.0))
 
-    def binary_cls_final(self, logits, labels):
+    def binary_cls_final(self, logits, labels, los_target_norm=None, los_mask=None):
+        """
+        Combined head:
+          - first K columns of `logits` -> binary outcome BCE
+          - last column of `logits`    -> z-scored LoS regression (MSE,
+            masked to RELEASE-discharged patients).
+
+        Training: returns scalar loss = BCE + los_loss_weight * masked-MSE.
+        Eval:     returns tensor of shape [bsz, K+1] where the first K
+                  columns are sigmoid-probabilities and the last column is
+                  the *normalised* LoS prediction. The evaluator denormalises
+                  the last column (multiply by los_std, add los_mean) before
+                  computing MAE in hours.
+        """
+        K = self.args.num_labels
+        binary_logits = logits[:, :K]
+        los_pred_norm = logits[:, K]
         if labels is not None:
-            return F.binary_cross_entropy_with_logits(logits, labels,
-                                    pos_weight=self.pos_class_weight)
-        else:
-            return F.sigmoid(logits)
+            loss = F.binary_cross_entropy_with_logits(
+                binary_logits, labels, pos_weight=self.pos_class_weight)
+            if los_target_norm is not None and los_mask is not None:
+                # Masked MSE on z-scored LoS; only RELEASE-discharged patients
+                # contribute. Division by max(mask.sum(), 1) keeps the gradient
+                # scale stable on batches with few/no valid LoS samples.
+                sq_err = (los_pred_norm - los_target_norm) ** 2 * los_mask
+                denom = torch.clamp(los_mask.sum(), min=1.0)
+                loss = loss + self.los_loss_weight * sq_err.sum() / denom
+            return loss
+        # Eval: probabilities for the K binary outcomes + normalised LoS.
+        binary_probs = torch.sigmoid(binary_logits)
+        return torch.cat([binary_probs, los_pred_norm.unsqueeze(-1)], dim=-1)
 
 
 

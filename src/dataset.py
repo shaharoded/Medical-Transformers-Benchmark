@@ -23,6 +23,10 @@ class Dataset:
         args.static_varis = metadata.get('static_varis', None)
         args.input_hours = metadata.get('input_hours', 48.0)
         args.horizon_hours = metadata.get('horizon_hours', 288.0)
+        # Length-of-stay regression target: z-scored hours from admission to RELEASE.
+        # Patients who died or have no terminal event are masked out of the LoS loss.
+        args.los_mean = float(metadata.get('los_mean', 0.0))
+        args.los_std  = float(metadata.get('los_std',  1.0)) or 1.0
         self.args = args
         self.first_hours = None
         run, totalruns = list(map(int, args.run.split('o')))
@@ -65,6 +69,19 @@ class Dataset:
         first_hour_cols = [o+'__first_hour' for o in args.outcome_names]
         if all(c in oc.columns for c in first_hour_cols):
             self.first_hours = np.array(oc[first_hour_cols]).astype(float)
+        # Length-of-stay target — raw hours (NaN where missing), plus a mask
+        # and a z-scored copy aligned to the same patient ordering as `y`.
+        if 'length_of_stay_hours' in oc.columns:
+            los_raw = oc['length_of_stay_hours'].to_numpy(dtype=float)
+            los_valid = np.isfinite(los_raw)
+            self.los_hours_raw = los_raw
+            self.los_mask = los_valid.astype(np.float32)
+            los_filled = np.where(los_valid, los_raw, args.los_mean)
+            self.los_target_norm = ((los_filled - args.los_mean) / args.los_std).astype(np.float32)
+        else:
+            self.los_hours_raw = np.full(len(oc), np.nan, dtype=float)
+            self.los_mask = np.zeros(len(oc), dtype=np.float32)
+            self.los_target_norm = np.zeros(len(oc), dtype=np.float32)
         N = len(sup_ts_ids)
 
         # To save
@@ -239,10 +256,12 @@ class Dataset:
                                     for delta,pad in zip(values,pad_mats)]))
         masks = torch.FloatTensor(np.stack([np.concatenate((delta,pad), axis=0) 
                                     for delta,pad in zip(masks,pad_mats)]))
-        return {'delta_t':deltas, 'x_t':values, 'm_t':masks, 
+        return {'delta_t':deltas, 'x_t':values, 'm_t':masks,
                 'seq_len':torch.LongTensor(num_timestamps),
-                'demo':torch.FloatTensor(self.demo[ind]), 
-                'labels':torch.FloatTensor(self.y[ind])}
+                'demo':torch.FloatTensor(self.demo[ind]),
+                'labels':torch.FloatTensor(self.y[ind]),
+                'los_target_norm':torch.FloatTensor(self.los_target_norm[ind]),
+                'los_mask':torch.FloatTensor(self.los_mask[ind])}
     def get_batch_strats(self, ind):
         demo = torch.FloatTensor(self.demo[ind]) # N,D
         num_obs = [len(self.values[i]) for i in ind]
@@ -257,7 +276,9 @@ class Dataset:
         obs_mask = torch.IntTensor(obs_mask)
         return {'values':values, 'times':times, 'varis':varis,
                 'obs_mask':obs_mask, 'demo':demo,
-                'labels':torch.FloatTensor(self.y[ind])}
+                'labels':torch.FloatTensor(self.y[ind]),
+                'los_target_norm':torch.FloatTensor(self.los_target_norm[ind]),
+                'los_mask':torch.FloatTensor(self.los_mask[ind])}
 
         
             

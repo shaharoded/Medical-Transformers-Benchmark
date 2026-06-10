@@ -163,7 +163,8 @@ class GRUD_TS(TimeSeriesModel):
         self.hid_dim = args.hid_dim
         self.dropout = nn.Dropout(args.dropout)
 
-    def forward(self, x_t, m_t, delta_t, seq_len, demo, labels=None):
+    def forward(self, x_t, m_t, delta_t, seq_len, demo, labels=None,
+                los_target_norm=None, los_mask=None):
         bsz = x_t.size()[0]
         device = x_t.device
         initial_state = (
@@ -179,4 +180,4 @@ class GRUD_TS(TimeSeriesModel):
         demo_emb = self.demo_emb(demo)
         ts_demo_emb = torch.cat((ts_emb, demo_emb), dim=-1)
         logits = self.binary_head(ts_demo_emb)
-        return self.binary_cls_final(logits, labels)
+        return self.binary_cls_final(logits, labels, los_target_norm, los_mask)
