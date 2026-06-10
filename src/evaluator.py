@@ -6,9 +6,19 @@ import os
 import pandas as pd
 
 
+def _drop_nonfinite(y_true, y_pred):
+    """Return only the rows where y_pred is finite (some freshly-initialised
+    models emit NaN on edge-case inputs — patients with all-masked
+    observation triplets, etc. Filter those out so sklearn doesn't choke)."""
+    mask = np.isfinite(y_pred)
+    return y_true[mask], y_pred[mask]
+
+
 def _safe_auc_pair(y_true, y_pred):
-    """AUROC/AUPRC; returns (nan, nan) when only one class is present."""
-    if len(np.unique(y_true)) < 2:
+    """AUROC/AUPRC; returns (nan, nan) when only one class is present
+    or when no finite predictions remain after filtering."""
+    y_true, y_pred = _drop_nonfinite(y_true, y_pred)
+    if len(y_true) == 0 or len(np.unique(y_true)) < 2:
         return np.nan, np.nan
     return (
         roc_auc_score(y_true, y_pred),
@@ -18,7 +28,8 @@ def _safe_auc_pair(y_true, y_pred):
 
 def _max_f1_pair(y_true, y_pred):
     """max-F1 from sweeping the PR curve plus F1 at the fixed 0.5 threshold."""
-    if len(np.unique(y_true)) < 2:
+    y_true, y_pred = _drop_nonfinite(y_true, y_pred)
+    if len(y_true) == 0 or len(np.unique(y_true)) < 2:
         return np.nan, np.nan, np.nan
     precision, recall, _ = precision_recall_curve(y_true, y_pred)
     f1_curve = (2 * precision * recall) / np.maximum(precision + recall, 1e-12)
@@ -72,9 +83,10 @@ def _bootstrap_test_metrics(true, pred, outcome_names,
         # LoS MAE on the RELEASE-discharged subset of the resample.
         mask_b = los_mask[idx]
         if mask_b.any():
-            los_samples[b] = float(
-                np.abs(los_pred_hours[idx][mask_b] - los_true_hours[idx][mask_b]).mean()
-            )
+            err = np.abs(los_pred_hours[idx][mask_b] - los_true_hours[idx][mask_b])
+            err = err[np.isfinite(err)]
+            if err.size:
+                los_samples[b] = float(err.mean())
 
     def _ci_block(arr_2d):
         """Return point estimate (mean across resamples) + 95 % CI per outcome."""
@@ -167,18 +179,27 @@ class Evaluator:
         los_pred_hours = los_pred_norm * los_std + los_mean
         los_true_hours = dataset.los_hours_raw[eval_ind]
         los_mask = dataset.los_mask[eval_ind].astype(bool)
-        if los_mask.any():
-            los_mae_hours = float(np.abs(los_pred_hours[los_mask] - los_true_hours[los_mask]).mean())
+        # A freshly-initialised model can emit NaN LoS predictions on edge-case
+        # inputs; combine the RELEASE-discharged mask with a finite-prediction
+        # mask so the MAE never propagates NaN through the run.
+        los_eval_mask = los_mask & np.isfinite(los_pred_hours) & np.isfinite(los_true_hours)
+        if los_eval_mask.any():
+            los_mae_hours = float(np.abs(los_pred_hours[los_eval_mask] - los_true_hours[los_eval_mask]).mean())
         else:
             los_mae_hours = float('nan')
         rows = []
         for i, outcome in enumerate(self.args.outcome_names):
-            y_true, y_pred = true[:, i], pred[:, i]
-            if len(np.unique(y_true))<2:
+            y_true_full, y_pred_full = true[:, i], pred[:, i]
+            n_pos_total = int(y_true_full.sum())
+            n_neg_total = int((1 - y_true_full).sum())
+            # Drop rows with non-finite preds (a freshly-initialised model can
+            # emit NaN on patients with all-masked observation triplets — we
+            # exclude those rows rather than crash sklearn).
+            y_true, y_pred = _drop_nonfinite(y_true_full, y_pred_full)
+            if len(y_true) == 0 or len(np.unique(y_true)) < 2:
                 rows.append({'outcome':outcome, 'auroc':np.nan, 'auprc':np.nan,
                              'minrp':np.nan, 'f1_0_5':np.nan, 'best_f1':np.nan,
-                             'n_pos':int(y_true.sum()),
-                             'n_neg':int((1-y_true).sum())})
+                             'n_pos':n_pos_total, 'n_neg':n_neg_total})
                 continue
             precision, recall, thresholds = precision_recall_curve(y_true, y_pred)
             f1_curve = (2 * precision * recall) / np.maximum(precision + recall, 1e-12)
@@ -188,8 +209,7 @@ class Evaluator:
                          'minrp':np.minimum(precision, recall).max(),
                          'f1_0_5':f1_score(y_true, y_pred >= 0.5),
                          'best_f1':np.nanmax(f1_curve),
-                         'n_pos':int(y_true.sum()),
-                         'n_neg':int((1-y_true).sum())})
+                         'n_pos':n_pos_total, 'n_neg':n_neg_total})
         table = pd.DataFrame(rows).set_index('outcome')
         result = {'auroc':float(table['auroc'].mean(skipna=True)),
                   'auprc':float(table['auprc'].mean(skipna=True)),
