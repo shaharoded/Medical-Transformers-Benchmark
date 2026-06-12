@@ -286,3 +286,56 @@ class Evaluator:
         risk_df.to_csv(
             os.path.join(self.args.output_dir, 'test_risk_df.csv'), index=False)
 
+
+
+class PretrainEvaluator:
+    """Validation-loss tracker for the forecasting pretraining stage.
+
+    Mirrors the official `evaluator_pretrain.py`: on first call per split we
+    cache three independent random sampling passes over the patient set so
+    the val-loss number is a stable monte-carlo estimate of the forecasting
+    MSE (one pass is too noisy because each call to `PretrainDataset.get_batch`
+    samples a random anchor per patient).
+
+    Reports `loss_neg = -MSE` so the main loop's best-val-metric logic
+    (`val_metric > best_val_metric` -> save checkpoint) works without
+    additional branching. Lower MSE -> higher loss_neg -> better.
+    """
+
+    def __init__(self, args):
+        self.args = args
+        self.io = {}
+
+    def evaluate(self, model, dataset, split, train_step):
+        self.args.logger.write('\nEvaluating on split = ' + split)
+        if split not in self.io:
+            batches = []
+            eval_ind = list(dataset.splits[split])
+            for start in tqdm(range(0, len(eval_ind), self.args.eval_batch_size),
+                              desc='generating io for eval split ' + split):
+                batch_ind = eval_ind[start:start + self.args.eval_batch_size]
+                # Three random anchor draws per patient -> stable val loss.
+                for _ in range(3):
+                    batches.append(dataset.get_batch(batch_ind))
+            self.io[split] = batches
+
+        model.eval()
+        loss_total = 0.0
+        count = 0
+        for batch in tqdm(self.io[split], desc='running forward pass'):
+            batch = {k: v.to(self.args.device) for k, v in batch.items()}
+            with torch.no_grad():
+                loss = model(**batch)
+                num_pred = batch['forecast_mask'].sum().item()
+                # `loss` is the mean over predicted variables in this batch;
+                # multiply back to get the un-normalised sum so we can
+                # re-average over the whole split.
+                loss_total += float(loss.item()) * num_pred
+                count      += num_pred
+        mse = loss_total / max(count, 1)
+        result = {'loss_neg': -mse, 'mse': mse}
+        if train_step is not None:
+            self.args.logger.write(
+                'Result on ' + split + ' split at train step ' + str(train_step)
+                + ': ' + str(result))
+        return result

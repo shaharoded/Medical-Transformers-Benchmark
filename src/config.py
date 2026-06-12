@@ -3,7 +3,33 @@ CONCEPT_SUPPORT_THRESHOLD = 0.01
 
 DEFAULT_TEMPORAL_CSV = "data/mimic-iv-input-data.csv"
 DEFAULT_CONTEXT_CSV = "data/context_data.csv"
-DEFAULT_PROCESSED_PATH = "data/processed/user_mimic_iv.pkl"
+# Preprocessing now writes two pickles. The supervised stage consumes
+# `*_finetune.pkl` (first 48 h temporal inputs + 48-336 h labels), matching
+# the prior single-pickle behaviour. The self-supervised forecasting stage
+# consumes `*_pretrain.pkl`, whose temporal input table is *not* truncated to
+# the supervised input window — it carries the full 0-336 h trajectory so the
+# pretrain head can predict observations across the entire prediction horizon.
+DEFAULT_PROCESSED_DIR = "data/processed"
+DEFAULT_FINETUNE_PKL = "data/processed/user_mimic_iv_finetune.pkl"
+DEFAULT_PRETRAIN_PKL = "data/processed/user_mimic_iv_pretrain.pkl"
+# Back-compat alias: code paths that hard-coded the legacy single-pkl name
+# resolve to the finetune pkl.
+DEFAULT_PROCESSED_PATH = DEFAULT_FINETUNE_PKL
+
+# ---------------------------------------------------------------------------
+# Self-supervised forecasting pretraining (Tipirneni & Reddy 2022).
+#
+# Anchored sliding-window MSE: for each sample we pick a random anchor time
+# `t_anchor` (at least `MIN_ANCHOR_HOURS` into the trajectory), feed the last
+# `OBS_WINDOW_HOURS` of observations ending at `t_anchor` to the encoder, and
+# ask the forecast head to predict each variable's value over the next
+# `FORECAST_WINDOW_MINUTES` minutes. Loss is masked MSE over variables that
+# were actually observed in the forecast window.
+PRETRAIN_OBS_WINDOW_HOURS     = 48.0   # length cap of the encoder's view; matches the supervised input window
+PRETRAIN_FORECAST_WINDOW_MIN  = 120.0  # 2 h forecast horizon (same as paper)
+PRETRAIN_MIN_ANCHOR_HOURS     = 12.0   # need at least 12 h of history before forecasting
+PRETRAIN_MAX_DATA_HOURS       = 336.0  # outer bound = full 14-day trajectory available in *_pretrain.pkl
+PRETRAIN_MAX_OBS              = 880    # per-sample triplet cap, matches `Dataset.max_obs`
 
 # ---------------------------------------------------------------------------
 # Outcomes — Mediator-aligned Complications.

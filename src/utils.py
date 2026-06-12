@@ -97,14 +97,38 @@ class TimeSeriesModel(nn.Module):
         # regression (MSE against the normalised target during training,
         # denormalised in the evaluator to report MAE in hours).
         head_out_dim = args.num_labels + 1
+        self.pretrain = getattr(args, 'pretrain', 0) == 1
         self.finetune = args.load_ckpt_path is not None
-        if self.finetune:
+        # Pretrain branch: only the V-dim forecast head (predicts next-window
+        # value per variable). No binary / LoS head -> no labels needed.
+        # Finetune branch: forecast_head is kept so pretrained weights can be
+        # loaded, and the supervised binary_head is stacked on top of it.
+        # Default (supervised from scratch): binary_head directly on the
+        # backbone embedding.
+        if self.pretrain:
+            self.forecast_head = nn.Linear(ts_demo_emb_size, args.V)
+        elif self.finetune:
             self.forecast_head = nn.Linear(ts_demo_emb_size, args.V)
             self.binary_head = nn.Linear(args.V, head_out_dim)
         else:
             self.binary_head = nn.Linear(ts_demo_emb_size, head_out_dim)
-        self.register_buffer('pos_class_weight', torch.as_tensor(args.pos_class_weight).float())
-        self.los_loss_weight = float(getattr(args, 'los_loss_weight', 1.0))
+        if not self.pretrain:
+            self.register_buffer('pos_class_weight', torch.as_tensor(args.pos_class_weight).float())
+            self.los_loss_weight = float(getattr(args, 'los_loss_weight', 1.0))
+
+    def forecast_final(self, ts_emb, forecast_values, forecast_mask):
+        """Masked MSE on the forecast head, ported from the official STraTS repo.
+
+        The encoder pools its triplet sequence into `ts_emb` of shape
+        `[bsz, ts_demo_emb_size]`; `forecast_head` projects to `[bsz, V]`. For
+        each sample we minimise `(pred - target)^2` over the variables that
+        were actually observed inside the 2 h forecast window (mask=1) and
+        ignore everything else. Sum-over-mask, divide-by-mask-sum -> a
+        well-conditioned mean even when only a couple of variables fired.
+        """
+        pred = self.forecast_head(ts_emb)
+        denom = forecast_mask.sum().clamp(min=1.0)
+        return (forecast_mask * (pred - forecast_values) ** 2).sum() / denom
 
     def binary_cls_final(self, logits, labels, los_target_norm=None, los_mask=None):
         """

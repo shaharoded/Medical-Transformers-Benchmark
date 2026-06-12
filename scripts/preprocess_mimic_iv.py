@@ -234,11 +234,16 @@ def main():
     context = context.loc[context["PatientId"].isin(admissions["PatientId"])].copy()
     all_ids = np.array(sorted(context["PatientId"].unique()))
     patient_count = len(all_ids)
+    # 70/15/15 split by PatientId. all_ids is sorted so the partition
+    # is reproducible from the patient set + seed alone.
+    _TEST_SPLIT = 0.15
+    _VAL_SPLIT  = 0.15
     train_valid_ids, test_ids = train_test_split(
-        all_ids, test_size=0.2, random_state=args.seed
+        all_ids, test_size=_TEST_SPLIT, random_state=args.seed
     )
+    _val_relative = _VAL_SPLIT / (1.0 - _TEST_SPLIT)
     train_ids, valid_ids = train_test_split(
-        train_valid_ids, test_size=0.2, random_state=args.seed
+        train_valid_ids, test_size=_val_relative, random_state=args.seed
     )
 
     # ---------------------------------------------------------------------
@@ -419,67 +424,83 @@ def main():
         for alias in aliases
     }
 
-    temporal_inputs = temporal.loc[
-        (temporal["minute"] <= input_minutes)
-        & (~temporal["ConceptName"].isin(kept_pass_through_aliases))
-        & (~temporal["ConceptName"].isin(terminal_aliases))
-    ].copy()
-
     # Demote computed outcomes that were dropped from targets: their event
-    # rows (within the observation window) re-enter the input stream as
-    # regular tokens, so the vocabulary is preserved end-to-end.
+    # rows re-enter the input stream as regular tokens, so the vocabulary is
+    # preserved end-to-end. The window cap is applied inside _build_inputs.
     dropped_computed = [
         o for o in COMPUTED_OUTCOMES
         if o in args.outcomes and o not in outcome_names
     ]
-    if dropped_computed and len(outcome_events):
-        demoted = outcome_events.loc[
-            outcome_events["ConceptName"].isin(dropped_computed)
-            & (outcome_events["minute"] <= input_minutes)
-        ].copy()
-        if len(demoted):
-            shared_cols = [c for c in temporal_inputs.columns if c in demoted.columns]
-            temporal_inputs = pd.concat(
-                [temporal_inputs, demoted[shared_cols]],
-                ignore_index=True,
-            )
 
-    # Optional legacy support filter (off by default — see parser comment).
-    if args.concept_support_threshold > 0:
-        concept_support = _patient_support_by_concept(temporal_inputs, patient_count)
-        kept_input_concepts = set(
-            concept_support.loc[concept_support >= args.concept_support_threshold].index
-        )
-        dropped_input_concepts = sorted(
-            concept_support.loc[concept_support < args.concept_support_threshold].index
-        )
-        temporal_inputs = temporal_inputs.loc[
-            temporal_inputs["ConceptName"].isin(kept_input_concepts)
-        ].copy()
-    else:
-        kept_input_concepts = set(temporal_inputs["ConceptName"].unique())
-        dropped_input_concepts = []
-    temporal_inputs["value"] = _to_numeric_value(temporal_inputs["Value"])
-
-    categorical = temporal_inputs["value"].isna()
-    temporal_inputs.loc[categorical, "ConceptName"] = (
-        temporal_inputs.loc[categorical, "ConceptName"].astype(str)
-        + "_"
-        + temporal_inputs.loc[categorical, "Value"].astype(str)
-    )
-    temporal_inputs.loc[categorical, "value"] = 1.0
-    temporal_inputs = temporal_inputs.dropna(subset=["value"])
-    temporal_inputs = temporal_inputs.rename(
-        columns={"PatientId": "ts_id", "ConceptName": "variable"}
-    )[["ts_id", "minute", "variable", "value"]]
-
+    # Static context (admission-time features) — emitted once, replayed into
+    # both the finetune and pretrain input tables at minute=0 so the model
+    # sees the same demographics in either stage.
     static_varis = [c for c in context.columns if c != "PatientId"]
     static = context.rename(columns={"PatientId": "ts_id"}).melt(
         id_vars="ts_id", value_vars=static_varis, var_name="variable", value_name="value"
     )
     static["minute"] = 0.0
-    data = pd.concat([temporal_inputs, static[["ts_id", "minute", "variable", "value"]]])
-    data = data.groupby(["ts_id", "minute", "variable"], as_index=False)["value"].mean()
+    static_cols = ["ts_id", "minute", "variable", "value"]
+
+    def _build_inputs(max_minute):
+        """Build a (data, kept_input_concepts) tuple for an arbitrary
+        upper-bound on `minute`. `max_minute` is in minutes from admission.
+
+        Used twice: once with the supervised input window (`input_minutes`,
+        default 48 h) to produce the *finetune* data table, and once with
+        `input_minutes + horizon_minutes` (default 336 h) to produce the
+        *pretrain* data table consumed by `PretrainDataset`.
+        """
+        ti = temporal.loc[
+            (temporal["minute"] <= max_minute)
+            & (~temporal["ConceptName"].isin(kept_pass_through_aliases))
+            & (~temporal["ConceptName"].isin(terminal_aliases))
+        ].copy()
+
+        if dropped_computed and len(outcome_events):
+            demoted = outcome_events.loc[
+                outcome_events["ConceptName"].isin(dropped_computed)
+                & (outcome_events["minute"] <= max_minute)
+            ].copy()
+            if len(demoted):
+                shared = [c for c in ti.columns if c in demoted.columns]
+                ti = pd.concat([ti, demoted[shared]], ignore_index=True)
+
+        if args.concept_support_threshold > 0:
+            cs = _patient_support_by_concept(ti, patient_count)
+            kept = set(cs.loc[cs >= args.concept_support_threshold].index)
+            dropped = sorted(cs.loc[cs < args.concept_support_threshold].index)
+            ti = ti.loc[ti["ConceptName"].isin(kept)].copy()
+        else:
+            kept = set(ti["ConceptName"].unique())
+            dropped = []
+
+        ti["value"] = _to_numeric_value(ti["Value"])
+        cat_mask = ti["value"].isna()
+        # Indicator expansion: rows with non-numeric Value become
+        # `<Concept>_<Value>` variables with numeric value=1.0. Same trick
+        # the official STraTS uses to keep categorical events in scope.
+        ti.loc[cat_mask, "ConceptName"] = (
+            ti.loc[cat_mask, "ConceptName"].astype(str)
+            + "_"
+            + ti.loc[cat_mask, "Value"].astype(str)
+        )
+        ti.loc[cat_mask, "value"] = 1.0
+        ti = ti.dropna(subset=["value"])
+        ti = ti.rename(columns={"PatientId": "ts_id", "ConceptName": "variable"})[
+            static_cols
+        ]
+        d = pd.concat([ti, static[static_cols]])
+        d = d.groupby(["ts_id", "minute", "variable"], as_index=False)["value"].mean()
+        return d, kept, dropped
+
+    # Supervised stage: 0 - input_minutes (default 48 h).
+    data, kept_input_concepts, dropped_input_concepts = _build_inputs(input_minutes)
+    # Self-supervised forecasting stage: 0 - (input + horizon) (default 336 h).
+    # Strictly a superset of `data` (same rows up to input_minutes plus the
+    # horizon rows), so its variable vocabulary is a superset of `data`'s.
+    pretrain_max_minute = input_minutes + horizon_minutes
+    pretrain_data, _, _ = _build_inputs(pretrain_max_minute)
 
     metadata = {
         "static_varis": static_varis,
@@ -514,13 +535,38 @@ def main():
         "label_mode": args.label_mode,
     }
 
-    os.makedirs(os.path.dirname(args.output_path), exist_ok=True)
+    # Derive the two output paths from --output_path. If the caller passes an
+    # explicit `_finetune` suffix we swap it for `_pretrain`; otherwise we
+    # append `_pretrain` before the extension. The finetune pickle keeps the
+    # exact path `--output_path` (back-compat with older scripts).
+    finetune_path = args.output_path
+    if "_finetune" in os.path.basename(finetune_path):
+        pretrain_path = finetune_path.replace("_finetune", "_pretrain", 1)
+    else:
+        base, ext = os.path.splitext(finetune_path)
+        pretrain_path = base + "_pretrain" + ext
+
+    pretrain_metadata = dict(metadata)
+    pretrain_metadata["stage"] = "pretrain"
+    pretrain_metadata["input_hours"] = pretrain_max_minute / 60.0
+    pretrain_metadata["horizon_hours"] = 0.0   # no labels in this stage
+    metadata["stage"] = "finetune"
+
+    os.makedirs(os.path.dirname(finetune_path), exist_ok=True)
     pickle.dump(
         [data, labels, train_ids, valid_ids, test_ids, metadata],
-        open(args.output_path, "wb"),
+        open(finetune_path, "wb"),
     )
-    print("Wrote", args.output_path)
-    print("Rows:", len(data), "patients:", data["ts_id"].nunique())
+    # Pretrain pickle reuses the labels block for schema compatibility;
+    # PretrainDataset ignores it (forecast-MSE has no use for labels).
+    pickle.dump(
+        [pretrain_data, labels, train_ids, valid_ids, test_ids, pretrain_metadata],
+        open(pretrain_path, "wb"),
+    )
+    print("Wrote", finetune_path)
+    print("  finetune rows:", len(data), "patients:", data["ts_id"].nunique())
+    print("Wrote", pretrain_path)
+    print("  pretrain rows:", len(pretrain_data), "patients:", pretrain_data["ts_id"].nunique())
     print("Outcomes kept:", outcome_names)
     print("Outcomes dropped from targets (kept in vocab as input tokens):", dropped_outcomes)
     if dropped_input_concepts:

@@ -6,13 +6,13 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
 
 from utils import Logger, count_parameters, set_all_seeds
 import torch
-from dataset import Dataset
+from dataset import Dataset, PretrainDataset
 from strats import Strats
 from grud import GRUD_TS
 import numpy as np
 from tqdm import tqdm
 from transformers.optimization import AdamW
-from evaluator import Evaluator
+from evaluator import Evaluator, PretrainEvaluator
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,26 +58,46 @@ def parse_args() -> argparse.Namespace:
     # to skip the CI block and produce single-point estimates only.
     parser.add_argument('--bootstrap_resamples', type=int, default=2000)
     parser.add_argument('--bootstrap_seed',      type=int, default=42)
+    # Self-supervised forecasting pretraining (Tipirneni & Reddy 2022).
+    # When --pretrain 1 the run loads `<dataset>_pretrain.pkl` (full 0-336 h
+    # trajectory, no labels), trains only the forecast head against a 2 h
+    # next-window MSE, and writes `checkpoint_best.bin` for the supervised
+    # stage to consume via --load_ckpt_path.
+    parser.add_argument('--pretrain', type=int, default=0, choices=[0, 1])
+    parser.add_argument('--pretrain_dataset', type=str, default=None,
+                        help="Override the pretrain pickle name; defaults to "
+                             "'<--dataset>_pretrain'. Only used when --pretrain 1.")
 
     args = parser.parse_args()
     return args
 
 
 def set_output_dir(args: argparse.Namespace) -> None:
-    """Function to automatically set output dir 
+    """Function to automatically set output dir
     if it is not passed in args."""
     if args.output_dir is None:
-        if args.load_ckpt_path is not None:
-            args.output_dir_prefix = 'finetune_'+args.output_dir_prefix
-        args.output_dir = 'outputs/'+args.dataset+'/'+args.output_dir_prefix
-        args.output_dir += args.model_type
+        if args.pretrain == 1:
+            # Pretrain runs go into a sibling folder; the supervised stage
+            # picks the checkpoint up via --load_ckpt_path.
+            args.output_dir = (
+                'outputs/' + args.dataset + '/' + args.output_dir_prefix + 'pretrain/'
+                + args.model_type
+            )
+        else:
+            if args.load_ckpt_path is not None:
+                args.output_dir_prefix = 'finetune_'+args.output_dir_prefix
+            args.output_dir = 'outputs/'+args.dataset+'/'+args.output_dir_prefix
+            args.output_dir += args.model_type
         params = ['num_layers', 'hid_dim', 'num_heads', 'dropout', 'attention_dropout', 'lr']
         if args.model_type=='grud':
             params = ['hid_dim', 'dropout', 'max_timesteps', 'lr']
         for param in params:
             args.output_dir += ','+param+':'+str(getattr(args, param))
-        for param in ['train_frac', 'run']:
-            args.output_dir += '|'+param+':'+str(getattr(args, param))
+        # train_frac/run isn't meaningful for pretraining (we use the full
+        # train+val pool, single pass) so skip those tags in that case.
+        if args.pretrain != 1:
+            for param in ['train_frac', 'run']:
+                args.output_dir += '|'+param+':'+str(getattr(args, param))
     os.makedirs(args.output_dir, exist_ok=True)
 
 
@@ -97,7 +117,17 @@ if __name__ == "__main__":
     model_path_best = os.path.join(args.output_dir, 'checkpoint_best.bin')
 
     # load data
-    dataset = Dataset(args)
+    if args.pretrain == 1:
+        if args.model_type not in ('strats', 'istrats'):
+            raise SystemExit(
+                "--pretrain 1 only supported for STraTS (the official codebase "
+                "does not pretrain GRU-D)."
+            )
+        if args.load_ckpt_path is not None:
+            raise SystemExit("--pretrain 1 cannot be combined with --load_ckpt_path.")
+        dataset = PretrainDataset(args)
+    else:
+        dataset = Dataset(args)
 
     # load model
     model = Strats(args) if args.model_type in ['strats', 'istrats'] else GRUD_TS(args)
@@ -125,13 +155,14 @@ if __name__ == "__main__":
     best_val_res, best_test_res = None, None
     optimizer = AdamW(filter(lambda p:p.requires_grad, model.parameters()), lr=args.lr)
     train_bar = tqdm(range(args.max_steps))
-    evaluator = Evaluator(args)
+    evaluator = PretrainEvaluator(args) if args.pretrain == 1 else Evaluator(args)
 
     # results before any training
     if args.validate_after<0:
         results = evaluator.evaluate(model, dataset, 'val',  train_step=-1)
-        evaluator.evaluate(model, dataset, 'eval_train', train_step=-1)
-        evaluator.evaluate(model, dataset, 'test', train_step=-1)
+        if args.pretrain != 1:
+            evaluator.evaluate(model, dataset, 'eval_train', train_step=-1)
+            evaluator.evaluate(model, dataset, 'test', train_step=-1)
     
     model.train()
     for step in train_bar:
@@ -166,12 +197,18 @@ if __name__ == "__main__":
         if (num_steps>=args.validate_after) and (num_steps%args.validate_every==0):
             # get metrics on test and validation splits
             val_res = evaluator.evaluate(model, dataset, 'val', train_step=step)
-            evaluator.evaluate(model, dataset, 'eval_train', train_step=step)
-            test_res = evaluator.evaluate(model, dataset, 'test', train_step=step)
+            if args.pretrain == 1:
+                # Pretraining has no labels and therefore no test/eval_train
+                # splits; best-val criterion is the (negated) forecasting MSE.
+                test_res = None
+                curr_val_metric = val_res['loss_neg']
+            else:
+                evaluator.evaluate(model, dataset, 'eval_train', train_step=step)
+                test_res = evaluator.evaluate(model, dataset, 'test', train_step=step)
+                curr_val_metric = val_res['auprc']+val_res['auroc']
             model.train(True)
 
             # Save ckpt if there is an improvement.
-            curr_val_metric = val_res['auprc']+val_res['auroc']
             if curr_val_metric>best_val_metric:
                 best_val_metric = curr_val_metric
                 best_val_res, best_test_res = val_res, test_res

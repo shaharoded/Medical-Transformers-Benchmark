@@ -280,8 +280,258 @@ class Dataset:
                 'los_target_norm':torch.FloatTensor(self.los_target_norm[ind]),
                 'los_mask':torch.FloatTensor(self.los_mask[ind])}
 
-        
-            
-            
 
+class PretrainDataset(Dataset):
+    """Forecasting-pretraining dataset for STraTS.
+
+    Ports `dataset_pretrain.py` from the official Tipirneni & Reddy
+    implementation, adapted to our two-pickle preprocess (`*_pretrain.pkl`
+    carries the full 0-336 h trajectory; the supervised input window is
+    *not* applied here). Train+val patients are pooled; test patients are
+    held out completely so the forecast head never sees them.
+
+    For each sample drawn at training time:
+      - pick a random anchor `t_anchor` from this patient's set of unique
+        observation timestamps that are >= `min_anchor_minutes` (default 12 h);
+      - take the last up-to-`max_obs` triplets that fall in
+        `(t_anchor - obs_window_minutes, t_anchor]` as the encoder input;
+      - target = the most-recent observed value of each variable inside
+        `(t_anchor, t_anchor + forecast_window_minutes]` (default 2 h).
+    Loss is masked MSE over variables that were actually observed in the
+    forecast window (handled by `TimeSeriesModel.forecast_final`).
+    """
+
+    def __init__(self, args) -> None:
+        # Read the dedicated pretrain pickle. Schema mirrors the supervised
+        # pickle but `oc` carries no usable labels (we don't pretrain against
+        # labels) so we tolerate either form.
+        from config import (
+            PRETRAIN_OBS_WINDOW_HOURS,
+            PRETRAIN_FORECAST_WINDOW_MIN,
+            PRETRAIN_MIN_ANCHOR_HOURS,
+            PRETRAIN_MAX_DATA_HOURS,
+            PRETRAIN_MAX_OBS,
+        )
+
+        filepath = self._resolve_pretrain_path(args)
+        loaded = pickle.load(open(filepath, 'rb'))
+        if len(loaded) == 6:
+            data, _oc, train_ids, val_ids, test_ids, metadata = loaded
+        else:
+            data, _oc, train_ids, val_ids, test_ids = loaded
+            metadata = {}
+        args.outcome_names = metadata.get('outcome_names', [])
+        args.num_labels = len(args.outcome_names)
+        args.static_varis = metadata.get('static_varis', None)
+        args.input_hours = metadata.get('input_hours', PRETRAIN_OBS_WINDOW_HOURS)
+        args.horizon_hours = metadata.get('horizon_hours', PRETRAIN_MAX_DATA_HOURS - PRETRAIN_OBS_WINDOW_HOURS)
+        args.los_mean = 0.0
+        args.los_std  = 1.0
+        # Pretraining never touches labels -> dummy LoS weight so downstream
+        # code that probes `args.pos_class_weight` doesn't fault.
+        args.pos_class_weight = np.zeros(max(args.num_labels, 1))
+
+        self.args = args
+        self.first_hours = None
+        self.max_obs = PRETRAIN_MAX_OBS
+        self.obs_window_minutes      = PRETRAIN_OBS_WINDOW_HOURS * 60.0
+        self.forecast_window_minutes = float(PRETRAIN_FORECAST_WINDOW_MIN)
+        self.min_anchor_minutes      = PRETRAIN_MIN_ANCHOR_HOURS * 60.0
+        self.max_minute              = PRETRAIN_MAX_DATA_HOURS * 60.0
+        args.max_obs = self.max_obs
+
+        # Confine trajectory to the pretrain window. Test patients are
+        # excluded entirely; the forecast head must never see test data,
+        # so finetuning measures supervised lift cleanly.
+        data = data.loc[(data.minute >= 0) & (data.minute <= self.max_minute)]
+        data = data.loc[~data.ts_id.isin(test_ids)]
+
+        args.logger.write('\nPreparing pretrain dataset '+args.dataset)
+        static_varis = self.get_static_varis(args.dataset)
+
+        # Variable vocabulary derived from training patients only (to avoid
+        # leaking val-only variables into the encoder). Drop anything else.
+        train_variables = data.loc[data.ts_id.isin(train_ids)].variable.unique()
+        all_variables = data.variable.unique()
+        delete_variables = np.setdiff1d(all_variables, train_variables)
+        args.logger.write('Removing variables not in training set: '+str(delete_variables))
+        data = data.loc[data.variable.isin(train_variables)]
+        val_ids = np.intersect1d(val_ids, data.ts_id.unique())
+        train_ids = np.intersect1d(train_ids, data.ts_id.unique())
+
+        unsup_ts_ids = np.concatenate((train_ids, val_ids))
+        ts_id_to_ind = {ts_id: i for i, ts_id in enumerate(unsup_ts_ids)}
+        data = data.loc[data.ts_id.isin(unsup_ts_ids)].copy()
+        data['ts_ind'] = data['ts_id'].map(ts_id_to_ind)
+        N = len(unsup_ts_ids)
+
+        args.logger.write('# train, val TS (pretrain): '+str([len(train_ids), len(val_ids)]))
+
+        self.N = N
+        self.static_varis = static_varis
+        self.splits = {
+            'train': np.array([ts_id_to_ind[i] for i in train_ids], dtype=np.int64),
+            'val':   np.array([ts_id_to_ind[i] for i in val_ids],   dtype=np.int64),
+        }
+        self.train_cycler = CycleIndex(self.splits['train'], args.train_batch_size)
+
+        # Static demographics: same code path as supervised, just no labels.
+        data = self.get_static_data(data)
+
+        # Normalise temporal values per variable using train-only statistics.
+        means_stds = (
+            data.loc[data.ts_id.isin(train_ids)].groupby('variable')
+                .agg({'value': ['mean', 'std']})
+        )
+        means_stds.columns = [c[1] for c in means_stds.columns]
+        means_stds.loc[means_stds['std'] == 0, 'std'] = 1.0
+        data = data.merge(means_stds.reset_index(), on='variable', how='left')
+        data['value'] = (data['value'] - data['mean']) / data['std']
+
+        variables = data.variable.unique()
+        var_to_ind = {v: i for i, v in enumerate(variables)}
+        V = len(variables)
+        args.V = V
+        args.logger.write('# TS variables (pretrain): '+str(V))
+
+        # Persist variables + normalisation so finetune can rebuild the same
+        # vocabulary and apply the same z-score (matches the official repo's
+        # pt_saved_variables.pkl protocol).
+        os.makedirs(args.output_dir, exist_ok=True)
+        pickle.dump(
+            [list(variables), means_stds, float(self.max_minute)],
+            open(os.path.join(args.output_dir, 'pt_saved_variables.pkl'), 'wb'),
+        )
+
+        # Build per-patient (value, time, variable_idx) arrays. Sorted by
+        # minute so we can later slice an observation window by index.
+        data = data.sort_values(by=['ts_ind', 'minute'])
+        values = [[] for _ in range(N)]
+        times  = [[] for _ in range(N)]
+        varis  = [[] for _ in range(N)]
+        for row in data.itertuples():
+            values[row.ts_ind].append(row.value)
+            times[row.ts_ind].append(row.minute)
+            varis[row.ts_ind].append(var_to_ind[row.variable])
+        self.values, self.times, self.varis = values, times, varis
+
+        # Pre-compute the set of legal anchor timestamps per patient
+        # (unique observed minutes >= min_anchor_minutes and < max_minute, with
+        # at least one observation in the forecast window after them).
+        max_forecast_anchor = self.max_minute - 1e-6  # need room for >1 sample after t_anchor
+        self.timestamps = []
+        for arr in self.times:
+            if not arr:
+                self.timestamps.append(np.array([], dtype=float))
+                continue
+            uniq = np.unique(np.asarray(arr, dtype=float))
+            uniq = uniq[(uniq >= self.min_anchor_minutes) & (uniq < max_forecast_anchor)]
+            # Drop the last unique timestamp: no observations strictly after it.
+            self.timestamps.append(uniq[:-1] if len(uniq) > 1 else np.array([], dtype=float))
+
+        # Patients without any legal anchor are dropped from the cycler.
+        drop = {i for i in range(N) if len(self.timestamps[i]) == 0}
+        self.splits = {k: np.array([j for j in v if j not in drop], dtype=np.int64)
+                       for k, v in self.splits.items()}
+        self.train_cycler = CycleIndex(self.splits['train'], args.train_batch_size)
+        self.V = V
+
+    @staticmethod
+    def _resolve_pretrain_path(args) -> str:
+        """Resolve which pickle to load for pretraining.
+
+        Honours an explicit `args.pretrain_dataset` if provided; otherwise
+        appends `_pretrain` to `args.dataset` (the supervised default lives
+        in `*_finetune.pkl`). Falls back to the legacy single-pickle name if
+        a dedicated pretrain pickle isn't on disk yet, so old setups don't
+        suddenly break.
+        """
+        name = getattr(args, 'pretrain_dataset', None) or (args.dataset + '_pretrain')
+        candidate = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), '..', 'data', 'processed', name + '.pkl')
+        )
+        if os.path.exists(candidate):
+            return candidate
+        legacy = os.path.abspath(
+            os.path.join(os.path.dirname(__file__), '..', 'data', 'processed', args.dataset + '.pkl')
+        )
+        return legacy
+
+    def get_batch(self, ind=None):
+        if ind is None:
+            ind = self.train_cycler.get_batch_ind()
+        bsz = len(ind)
+        V = self.V
+        input_values = []
+        input_times  = []
+        input_varis  = []
+        forecast_values = torch.zeros((bsz, V))
+        forecast_mask   = torch.zeros((bsz, V), dtype=torch.int)
+
+        for b, i in enumerate(ind):
+            anchors = self.timestamps[i]
+            t1 = float(np.random.choice(anchors))
+            curr_times  = self.times[i]
+            curr_values = self.values[i]
+            curr_varis  = self.varis[i]
+
+            # t1_ix = first index strictly after t1 (start of forecast window)
+            t1_ix = len(curr_times)
+            for ix in range(len(curr_times) - 1, -1, -1):
+                if curr_times[ix] <= t1:
+                    t1_ix = ix + 1
+                    break
+
+            # observation window: last `max_obs` triplets in
+            # (t1 - obs_window_minutes, t1].
+            t0_ix = max(0, t1_ix - self.max_obs)
+            min_obs_time = t1 - self.obs_window_minutes
+            while t0_ix < t1_ix and curr_times[t0_ix] < min_obs_time:
+                t0_ix += 1
+
+            # Shift the window so t1 sits at the supervised input boundary
+            # (`obs_window_minutes`). This keeps the relative-time scaling
+            # consistent across anchor choices.
+            shift = t1 - self.obs_window_minutes
+            obs_t = [t - shift for t in curr_times[t0_ix:t1_ix]]
+            input_values.append(list(curr_values[t0_ix:t1_ix]))
+            input_times.append(obs_t)
+            input_varis.append(list(curr_varis[t0_ix:t1_ix]))
+
+            # forecast window: (t1, t1 + forecast_window_minutes]. Take the
+            # most-recent observation of each variable seen there.
+            t2 = t1 + self.forecast_window_minutes
+            t2_ix = t1_ix
+            while t2_ix < len(curr_times) and curr_times[t2_ix] <= t2:
+                t2_ix += 1
+            for ix in range(t2_ix - 1, t1_ix - 1, -1):
+                v = curr_varis[ix]
+                if forecast_mask[b, v] == 0:
+                    forecast_mask[b, v] = 1
+                    forecast_values[b, v] = curr_values[ix]
+
+        num_obs = list(map(len, input_values))
+        max_obs = max(num_obs) if num_obs else 0
+        pad_lens = (max_obs - np.array(num_obs)) if num_obs else np.zeros(bsz, dtype=int)
+        values_p = [x + [0.0] * int(l) for x, l in zip(input_values, pad_lens)]
+        times_p  = [x + [0.0] * int(l) for x, l in zip(input_times,  pad_lens)]
+        varis_p  = [x + [0]   * int(l) for x, l in zip(input_varis,  pad_lens)]
+        values_t = torch.FloatTensor(values_p) if max_obs else torch.zeros((bsz, 0))
+        times_t  = torch.FloatTensor(times_p)  if max_obs else torch.zeros((bsz, 0))
+        varis_t  = torch.IntTensor(varis_p)    if max_obs else torch.zeros((bsz, 0), dtype=torch.int)
+        # Time is mapped into [-1, 1] using `obs_window_minutes` as the scale,
+        # matching the supervised dataset's `minute/max_minute*2-1` convention.
+        if max_obs:
+            times_t = times_t / self.obs_window_minutes * 2.0 - 1.0
+        obs_mask = torch.IntTensor([[1] * l1 + [0] * int(l2) for l1, l2 in zip(num_obs, pad_lens)]) \
+                    if max_obs else torch.zeros((bsz, 0), dtype=torch.int)
+        return {
+            'values': values_t,
+            'times':  times_t,
+            'varis':  varis_t,
+            'obs_mask': obs_mask,
+            'demo': torch.FloatTensor(self.demo[ind]),
+            'forecast_values': forecast_values,
+            'forecast_mask':   forecast_mask,
+        }
 
