@@ -46,6 +46,31 @@ roster): `CARDIO-VASCULAR_DISORDER_EVENT`, `HYPEROSMOLALITY_EVENT`,
 `DIABETIC_COMA_EVENT`, `ACUTE_RESPIRATORY_DISORDER_EVENT`,
 `OTHER_COMPLICATION_EVENT`.
 
+## Model Sizes
+
+Parameter counts on the `user_mimic_iv` task (V=73 variables, D=7 static
+features, K=6 supervised outcomes + 1 LoS regression scalar). Two
+configurations are reported: the **Small** column matches `main.py`'s
+argparse defaults in this repo (the architecture the current results below
+were trained at); the **Full** column is the larger configuration adopted
+by the updated training recipe in the README.
+
+| Configuration | Small (hid=32, nh=4) | Full (hid=64, nh=16) |
+|---|---:|---:|
+| ss-STraTS (supervised only) | 23,387 | 86,055 |
+| STraTS — pretrain stage (forecast head) | 27,677 | 94,569 |
+| STraTS — fine-tune stage (forecast + binary) | 28,195 | 95,087 |
+| GRU-D (supervised) | 22,745 | 55,577 |
+
+The fine-tune stage of STraTS trains the same supervised task as ss-STraTS
+— same `Dataset` (the `_finetune.pkl`), same multi-label BCE + LoS-MSE loss,
+same `Evaluator`, same bootstrap. The only architectural difference is that
+fine-tune stacks the pretrained `forecast_head` (Linear → V) under the
+`binary_head` (Linear → K+1) so the supervised stage can leverage the
+forecasting bottleneck learned in stage 1, while ss-STraTS puts `binary_head`
+directly on the backbone embedding. Comparing the two isolates the
+contribution of self-supervised pretraining on the same supervised endpoint.
+
 ## Overall Test Results
 
 Values are point estimates and 95 % CIs from a B=2000 patient-level bootstrap
