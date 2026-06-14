@@ -37,7 +37,7 @@ Configured prediction targets that passed the support threshold and trained:
 - `DEATH_EVENT`
 
 A regression head also predicts `length_of_stay_hours` for patients with a
-`RELEASE_EVENT` (n=9,978 in the test split).
+`RELEASE_EVENT` (n=7,456 in the test split).
 
 Configured outcomes available in `data/processed/user_mimic_iv.pkl` but
 dropped before training (low support / not part of the final benchmark
@@ -55,10 +55,10 @@ static features, K=6 supervised outcomes + 1 LoS regression scalar.
 
 | Configuration | Params |
 |---|---:|
-| STraTS — pretrain stage (forecast head)         |  94,569 |
-| STraTS — fine-tune stage (forecast + binary)    |  95,087 |
-| ss-STraTS (supervised only)                     |  86,055 |
-| GRU-D (supervised)                              |  55,577 |
+| STraTS — pretrain stage (forecast head)         |  92,308 |
+| STraTS — fine-tune stage (forecast + binary)    |  92,679 |
+| ss-STraTS (supervised only)                     |  86,503 |
+| GRU-D (supervised)                              |  47,919 |
 
 The fine-tune stage of STraTS trains the same supervised task as ss-STraTS
 — same `Dataset` (the `_finetune.pkl`), same multi-label BCE + LoS-MSE loss,
